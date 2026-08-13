@@ -177,14 +177,15 @@ rerank  ████████████████████████
 | rerank (top-8) | 26.43 ms | 29.98 ms | 57.61 ms | 86.58 ms | 115.70 ms |
 | **total (real wall-clock)** | **64.84 ms** | 72.64 ms | 99.96 ms | 135.02 ms | 401.62 ms |
 
-**P50 = 64.8 ms, P99 = 135.0 ms — under the 200 ms target with real margin.** The "total"
-row is measured end-to-end wall-clock, not a sum of the stage columns: dense, sparse and
-BM25 overlap in time, so their individual rows report each signal's own cost, not
-sequential add-on cost. Only the single-sample P100 (401.6 ms, one cold outlier at N=1)
-misses 200 ms — noise at that sample size, not representative of P50–P99.
+**Retrieval-only P50 = 64.8 ms, P70 = 72.6 ms, and P99 = 135.0 ms.** The "total"
+row is measured end-to-end wall-clock for the retrieval pipeline, not a sum of the stage
+columns: dense, sparse and BM25 overlap in time, so their individual rows report each
+signal's own cost, not sequential add-on cost. Its P100 is 401.6 ms, so the retrieval
+pipeline has a cold outlier above the 200 ms target. The complete voice-to-answer path is
+reported separately below and includes external STT and generation latency.
 
-*(Measured on the development GPU — RTX 4060 Laptop, 8GB — the same hardware the RunPod
-image is built from; RunPod runs an RTX 4090.)*
+*(Measured on the development GPU: RTX 4060 Laptop, 8GB. The deployment target is a
+separate RunPod RTX 4090; benchmark it again there before submitting final latency claims.)*
 
 ### Why an answer sometimes takes seconds, and why that's reported separately
 

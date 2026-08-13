@@ -6,11 +6,11 @@ RunPod does not support Docker Compose on Pods.
 
 ## Publish the image
 
-Push this repository to GitHub's `main` branch, then open the **Actions** tab
+Push this repository to GitHub's `master` branch, then open the **Actions** tab
 and wait for `Publish RunPod image` to succeed. The image is:
 
 ```text
-ghcr.io/YOUR_GITHUB_USERNAME/voice-rag:runpod
+ghcr.io/ridreb05/voice-rag:runpod
 ```
 
 If the GitHub package is private, make it public in the package settings or
