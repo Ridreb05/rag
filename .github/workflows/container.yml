@@ -24,5 +24,5 @@ jobs:
           context: .
           push: true
           tags: |
-            ghcr.io/${{ github.repository_owner }}/voice-rag:runpod
-            ghcr.io/${{ github.repository_owner }}/voice-rag:${{ github.sha }}
+            ghcr.io/ridreb05/voice-rag:runpod
+            ghcr.io/ridreb05/voice-rag:${{ github.sha }}
