@@ -1,7 +1,6 @@
 # syntax=docker/dockerfile:1.7
-# --- frontend build stage ---
-# Builds the Vite/React frontend to static assets; only the build output
-# (frontend/dist) is copied into the final image below — Node never ships.
+
+# Build the React frontend; Node is not included in the runtime image.
 FROM node:20-slim AS frontend-builder
 WORKDIR /app/frontend
 COPY frontend/package.json frontend/package-lock.json* ./
@@ -10,17 +9,12 @@ COPY frontend/ ./
 RUN npm run build
 
 # RunPod Pods cannot run Docker Compose. Copy Qdrant into the application
-# image so a single container can provide a private localhost vector service.
+# image so one container provides a private localhost vector service.
 FROM qdrant/qdrant:v1.13.4 AS qdrant-runtime
 
-# --- application image ---
-# CUDA 13.0 runtime base — matches this project's pinned torch build
-# (torch==2.13.0+cu130, pyproject.toml). What matters for compatibility is
-# the HOST's NVIDIA driver, not this base image's toolkit version: torch
-# wheels bundle their own CUDA runtime libs. Verify the target GPU's driver
-# supports CUDA 13.x before deploying — an older driver needs the cu124 pin
-# instead (see pyproject.toml's pytorch-cu130 index for how to repoint it).
-FROM nvidia/cuda:13.0.1-runtime-ubuntu22.04
+# CUDA 11.8 supports RTX 4090 (Ada) and is compatible with older RunPod
+# host drivers that reject CUDA 13 images before a container can start.
+FROM nvidia/cuda:11.8.0-runtime-ubuntu22.04
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
     python3.11 python3.11-venv python3-pip curl ca-certificates libunwind8 \
@@ -31,7 +25,7 @@ ENV PATH="/root/.local/bin:${PATH}"
 
 WORKDIR /app
 
-# Dependency layer first so `uv sync` only re-runs when deps actually change.
+# Dependency layer first so uv sync only re-runs when dependencies change.
 COPY pyproject.toml uv.lock ./
 RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --no-install-project
 
@@ -43,6 +37,10 @@ COPY infrastructure/runpod-entrypoint.sh /usr/local/bin/runpod-entrypoint
 RUN chmod +x /usr/local/bin/runpod-entrypoint
 RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev
 
+# Catch Linux-only torch / Transformers import failures in CI before an image
+# is published and deployed to a paid GPU Pod.
+RUN PYTHONPATH=/app/src /app/.venv/bin/python -c "from voice_rag.apps.api_gateway.main import app; print(app.title)"
+
 ENV PYTHONPATH=/app/src
 ENV PYTHONUNBUFFERED=1
 ENV QDRANT_URL=http://127.0.0.1:6333
@@ -50,9 +48,7 @@ ENV VOICE_RAG_MANAGED_QDRANT=1
 ENV VOICE_RAG_DATA_ROOT=/workspace/voice-rag
 ENV VOICE_RAG_INDEX_SPLIT=validation
 
-# data/ (Qdrant + BM25 indexes) is a volume mount, not baked into the image —
-# see docker-compose.yml. A full-corpus index is several GB; baking it in
-# would make every rebuild re-push that much data.
+# Data is persisted via the /workspace volume, not baked into the image.
 EXPOSE 8000
 
 ENTRYPOINT ["/usr/local/bin/runpod-entrypoint"]

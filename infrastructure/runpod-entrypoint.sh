@@ -4,7 +4,10 @@
 set -eu
 
 data_root="${VOICE_RAG_DATA_ROOT:-/workspace/voice-rag}"
-mkdir -p "$data_root/data" "$data_root/qdrant"
+mkdir -p "$data_root/data" "$data_root/qdrant" "$data_root/huggingface"
+
+# Keep dataset and model downloads across Pod restarts.
+export HF_HOME="$data_root/huggingface"
 
 # All existing Python tooling uses paths relative to /app. A symlink gives it
 # persistent RunPod storage without duplicating path configuration everywhere.
@@ -47,13 +50,22 @@ export BM25_PATH
 # Set this only for the initial Pod start. It downloads, normalizes, chunks,
 # and indexes the chosen corpus before loading the interactive API models.
 if [ "${VOICE_RAG_BOOTSTRAP_INDEX:-0}" = "1" ]; then
-  /app/.venv/bin/python -m voice_rag.ingestion.build_corpus --languages "$index_language" --split "$index_split"
-  /app/.venv/bin/python -m voice_rag.chunking.build_chunks --languages "$index_language" --split "$index_split"
-  /app/.venv/bin/python scripts/build_full_index.py \
-    --language "$index_language" \
-    --split "$index_split" \
-    --index-version "${VOICE_RAG_INDEX_VERSION:-full1}" \
-    --qdrant-url "$QDRANT_URL"
+  bootstrap_marker="$data_root/data/full_index/${index_language}_${index_split}_bootstrap_complete"
+  if [ -f "$bootstrap_marker" ]; then
+    echo "Index bootstrap already completed; reusing persistent index."
+  else
+    echo "Starting corpus download, chunking, and index bootstrap."
+    /app/.venv/bin/python -m voice_rag.ingestion.build_corpus --languages "$index_language" --split "$index_split"
+    /app/.venv/bin/python -m voice_rag.chunking.build_chunks --languages "$index_language" --split "$index_split"
+    /app/.venv/bin/python scripts/build_full_index.py \
+      --language "$index_language" \
+      --split "$index_split" \
+      --index-version "${VOICE_RAG_INDEX_VERSION:-full1}" \
+      --qdrant-url "$QDRANT_URL"
+    touch "$bootstrap_marker"
+    echo "Index bootstrap completed."
+  fi
 fi
 
+echo "Starting Voice RAG API on port 8000."
 exec /app/.venv/bin/uvicorn voice_rag.apps.api_gateway.main:app --host 0.0.0.0 --port 8000

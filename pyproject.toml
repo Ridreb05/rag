@@ -22,7 +22,7 @@ dependencies = [
     "python-dotenv>=1.2.2",
     "qdrant-client>=1.19.0",
     "tantivy>=0.26.0",
-    "torch==2.13.0+cu130",
+    "torch==2.6.0+cu118",
     "tqdm>=4.70.0",
 ]
 
@@ -39,20 +39,15 @@ dev = [
 ]
 
 [[tool.uv.index]]
-name = "pytorch-cu130"
-url = "https://download.pytorch.org/whl/cu130"
+name = "pytorch-cu118"
+url = "https://download.pytorch.org/whl/cu118"
 explicit = true
 
 [tool.uv.sources]
-# Pinned to the CUDA 13.0 wheel to match this machine's driver (RTX 4060
-# laptop GPU, driver reports CUDA UMD 13.3). Without this pin, `uv add`/`uv
-# sync` silently resolve to the CPU-only PyPI build — verified: the default
-# resolution (even with --index-strategy unsafe-best-match but no version
-# pin) picked torch==2.13.0+cpu over the CUDA build because uv's version
-# comparison ignores the +cu130 local segment unless the exact version is
-# pinned. `explicit = true` keeps this index from being used for any other
-# package (avoids accidentally resolving fsspec/numpy/etc. from it).
-torch = { index = "pytorch-cu130" }
+# Pinned to CUDA 11.8 for broad RunPod GPU-driver compatibility. The exact
+# local-version pin prevents uv from selecting a CPU-only PyPI wheel.
+# `explicit = true` keeps this index from resolving unrelated packages.
+torch = { index = "pytorch-cu118" }
 
 [tool.uv]
 index-strategy = "unsafe-best-match"

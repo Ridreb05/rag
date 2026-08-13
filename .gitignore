@@ -23,10 +23,10 @@ reports/
 
 # Test/tool caches
 .pytest_cache/
+.uv-cache/
 
 # Frontend (frontend/dist is covered by dist/ above)
 frontend/node_modules/
 
 # Local Claude Code project notes — not part of the submission
 CLAUDE.md
-
