@@ -19,9 +19,12 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
 
 import torch
-from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
+if TYPE_CHECKING:
+    from transformers import AutoModelForSequenceClassification, AutoTokenizer
 
 logger = logging.getLogger(__name__)
 
@@ -42,6 +45,12 @@ class ClaimValidation:
 
 class GroundingValidator:
     def __init__(self, model_name: str = MODEL_NAME, device: str | None = None):
+        # Keep the heavy optional model import inside the validator. This lets
+        # the API start with its other guardrails if a deployment image has an
+        # incompatible optional Transformers backend; ``main`` logs that
+        # degraded state instead of crashing the entire service.
+        from transformers import AutoModelForSequenceClassification, AutoTokenizer
+
         self.device = device or ("cuda" if torch.cuda.is_available() else "cpu")
         self._tokenizer = AutoTokenizer.from_pretrained(model_name)
         self._model = AutoModelForSequenceClassification.from_pretrained(model_name)

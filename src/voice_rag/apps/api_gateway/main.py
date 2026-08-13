@@ -110,7 +110,15 @@ async def lifespan(app: FastAPI):
     logger.info("Loading warm model pool...")
     services.embedding = EmbeddingService()
     services.reranker = RerankerService()
-    grounding_validator = GroundingValidator() if LOAD_GROUNDING_VALIDATOR else None
+    grounding_validator = None
+    if LOAD_GROUNDING_VALIDATOR:
+        try:
+            grounding_validator = GroundingValidator()
+        except Exception as exc:
+            # NLI validation is an additional, model-backed guardrail. Keep
+            # safety, retrieval-confidence, citation, and provider guardrails
+            # available if its optional runtime cannot initialize.
+            logger.exception("Grounding validator unavailable; starting without NLI validation: %s", exc)
     generator = GeminiGenerationService() if GENERATION_BACKEND == "gemini" else AnthropicGenerationService()
     services.harness = GenerationHarness(generator=generator, grounding_validator=grounding_validator)
     services.qdrant_client = get_client(path=None if QDRANT_URL else QDRANT_PATH, url=QDRANT_URL)
