@@ -25,6 +25,11 @@ if [ "${VOICE_RAG_MANAGED_QDRANT:-1}" = "1" ]; then
 
   attempts=0
   until curl -fsS http://127.0.0.1:6333/ >/dev/null; do
+    if ! kill -0 "$qdrant_pid" 2>/dev/null; then
+      echo "Qdrant exited before becoming ready" >&2
+      wait "$qdrant_pid" || true
+      exit 1
+    fi
     attempts=$((attempts + 1))
     if [ "$attempts" -gt 60 ]; then
       echo "Qdrant did not become ready within 60 seconds" >&2

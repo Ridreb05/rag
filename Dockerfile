@@ -23,7 +23,7 @@ FROM qdrant/qdrant:v1.13.4 AS qdrant-runtime
 FROM nvidia/cuda:13.0.1-runtime-ubuntu22.04
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3.11 python3.11-venv python3-pip curl ca-certificates \
+    python3.11 python3.11-venv python3-pip curl ca-certificates libunwind8 \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
