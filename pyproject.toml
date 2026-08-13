@@ -1,0 +1,78 @@
+[project]
+name = "voice-rag"
+version = "0.1.0"
+description = "Add your description here"
+authors = [
+    { name = "Debanik", email = "136997808+Ridreb05@users.noreply.github.com" }
+]
+requires-python = ">=3.11,<3.12"
+dependencies = [
+    "anthropic>=0.121.0",
+    "datasets>=5.0.1",
+    "fastapi[standard]>=0.141.1",
+    "flagembedding>=1.4.0",
+    "fsspec>=2026.6.0",
+    "httpx>=0.28.1",
+    "huggingface-hub>=1.27.0",
+    "llama-cpp-python>=0.3.34",
+    "numpy>=2.4.6",
+    "pandas>=3.0.5",
+    "pyarrow>=25.0.1",
+    "pydantic>=2.13.4",
+    "pydantic-settings>=2.15.0",
+    "python-dotenv>=1.2.2",
+    "qdrant-client>=1.19.0",
+    "tantivy>=0.26.0",
+    "torch==2.13.0+cu130",
+    "tqdm>=4.70.0",
+]
+
+[project.scripts]
+voice-rag = "voice_rag:main"
+
+[build-system]
+requires = ["uv_build>=0.12.0,<0.13.0"]
+build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.1.1",
+]
+
+[[tool.uv.index]]
+name = "llama-cpp-python-cu130"
+url = "https://abetlen.github.io/llama-cpp-python/whl/cu130"
+explicit = true
+
+[[tool.uv.index]]
+name = "pytorch-cu130"
+url = "https://download.pytorch.org/whl/cu130"
+explicit = true
+
+[tool.uv.sources]
+# Pinned to the CUDA 13.0 wheel to match this machine's driver (RTX 4060
+# laptop GPU, driver reports CUDA UMD 13.3). Without this pin, `uv add`/`uv
+# sync` silently resolve to the CPU-only PyPI build — verified: the default
+# resolution (even with --index-strategy unsafe-best-match but no version
+# pin) picked torch==2.13.0+cpu over the CUDA build because uv's version
+# comparison ignores the +cu130 local segment unless the exact version is
+# pinned. `explicit = true` keeps this index from being used for any other
+# package (avoids accidentally resolving fsspec/numpy/etc. from it).
+torch = { index = "pytorch-cu130" }
+# Same CUDA-build-vs-CPU-fallback risk as torch; pinned explicitly for the
+# same reason. Unlike torch, llama-cpp-python's version string has no local
+# segment to fight over, but pinning the index keeps `uv sync` from ever
+# resolving it from plain PyPI (which ships a CPU-only build requiring a
+# local compiler toolchain to add CUDA support).
+"llama-cpp-python" = { index = "llama-cpp-python-cu130" }
+
+[tool.uv]
+index-strategy = "unsafe-best-match"
+
+[tool.pytest.ini_options]
+pythonpath = ["src", "."]
+testpaths = ["tests"]
+addopts = "-m 'not slow'"
+markers = [
+    "slow: loads real ML models (BGE-M3, reranker, NLI) — needs GPU/network/model downloads; run explicitly with `-m slow`",
+]

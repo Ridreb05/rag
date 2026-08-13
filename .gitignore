@@ -1,0 +1,26 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Generated data — reproducible via voice_rag.ingestion / voice_rag.chunking
+# CLIs (see README.md), not source. data/processed alone is ~1.7GB.
+data/
+
+# Per-language JSON stats from voice_rag.ingestion.analyze — regenerate via
+# the command in README.md rather than tracking generated output.
+reports/
+
+# Secrets — see docs/09-roadmap-and-summary.md for which phases need these
+.env
+*.pem
+
+# Test/tool caches
+.pytest_cache/
+
