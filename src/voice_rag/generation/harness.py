@@ -125,9 +125,13 @@ class GenerationHarness:
             resp.guardrail_flags = guardrail_flags or ["no_grounded_claims"]
             return resp
 
+        # When the NLI validator is active, never return the model's original
+        # prose: it may include a claim that the validator just removed. The
+        # displayed answer is rebuilt exclusively from surviving grounded claims.
+        answer_text = " ".join(claim.text for claim in claims) if self.grounding_validator is not None else generated.answer_text
         return AnswerResponse(
             trace_id=trace_id,
-            answer_text=generated.answer_text,
+            answer_text=answer_text,
             claims=claims,
             confidence=retrieval_confidence,
             guardrail_flags=guardrail_flags,

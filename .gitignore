@@ -17,10 +17,16 @@ data/
 # the command in README.md rather than tracking generated output.
 reports/
 
-# Secrets — see docs/09-roadmap-and-summary.md for which phases need these
+# Secrets
 .env
 *.pem
 
 # Test/tool caches
 .pytest_cache/
+
+# Frontend (frontend/dist is covered by dist/ above)
+frontend/node_modules/
+
+# Local Claude Code project notes — not part of the submission
+CLAUDE.md
 

@@ -1,0 +1,64 @@
+import { useEffect, useRef, useState } from "react";
+import { createRoot } from "react-dom/client";
+import { QueryClient, QueryClientProvider, useMutation } from "@tanstack/react-query";
+import * as Accordion from "@radix-ui/react-accordion";
+import * as Collapsible from "@radix-ui/react-collapsible";
+import * as Toast from "@radix-ui/react-toast";
+import { AnimatePresence, motion } from "framer-motion";
+import { AudioLines, ChevronDown, CircleAlert, Clock3, Mic, Send, ShieldCheck, Sparkles, Square, Volume2, X } from "lucide-react";
+import "@fontsource/dm-sans/400.css";
+import "@fontsource/dm-sans/500.css";
+import "@fontsource/dm-sans/700.css";
+import "@fontsource/nunito/700.css";
+import "@fontsource/nunito/800.css";
+import "@fontsource/nunito/900.css";
+import "@fontsource/noto-sans-devanagari/400.css";
+import "@fontsource/noto-sans-devanagari/500.css";
+import "@fontsource/noto-sans-devanagari/700.css";
+import "./styles.css";
+
+interface QueryRequest { query: string; language?: string; top_k?: number }
+type AnswerMode = "refused" | "extractive" | "generative";
+interface EvidenceItem { chunk_id: string; text: string; rerank_score: number | null }
+interface LatencyMs { embedding_ms?: number; retrieval_ms?: number; fusion_ms?: number; rerank_ms?: number; generation_ms?: number; total_ms: number }
+interface QueryResponse { trace_id: string; answer_text: string; mode: AnswerMode; confidence: number; guardrail_flags: string[]; evidence: EvidenceItem[]; latency_ms: LatencyMs }
+interface VoiceQueryResponse extends QueryResponse { transcript: string }
+type Result = QueryResponse | VoiceQueryResponse;
+
+class ApiError extends Error { constructor(message: string, readonly status: number) { super(message); } }
+async function api<T>(path: string, init: RequestInit): Promise<T> { const response = await fetch(path, init); if (!response.ok) { const body = await response.json().catch(() => ({})); throw new ApiError(body.detail || "Something went wrong. Please try again.", response.status); } return response.json() as Promise<T>; }
+const submitText = (body: QueryRequest) => api<QueryResponse>("/v1/query", { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+const submitVoice = (audio: Blob) => { const data = new FormData(); data.append("audio", audio, `voice-query.${audio.type.includes("mp4") ? "mp4" : "webm"}`); data.append("language", "hi"); data.append("top_k", "10"); return api<VoiceQueryResponse>("/v1/voice-query", { method: "POST", body: data }); };
+const modeCopy: Record<AnswerMode, { label: string; description: string }> = { refused: { label: "No grounded answer", description: "The corpus did not provide a reliable answer." }, extractive: { label: "Direct answer", description: "Matched directly from the indexed corpus." }, generative: { label: "Synthesized answer", description: "Grounded in retrieved corpus passages." } };
+const isVoice = (result: Result): result is VoiceQueryResponse => "transcript" in result;
+const formatMs = (value: number) => value < 1000 ? `${Math.round(value)} ms` : `${(value / 1000).toFixed(2)} s`;
+
+function App() {
+  const [query, setQuery] = useState(""); const [result, setResult] = useState<Result | null>(null); const [toast, setToast] = useState<string | null>(null);
+  const [recording, setRecording] = useState(false); const [micDisabled, setMicDisabled] = useState(false); const [micMessage, setMicMessage] = useState("");
+  const recorderRef = useRef<MediaRecorder | null>(null); const streamRef = useRef<MediaStream | null>(null); const timeoutRef = useRef<number | null>(null);
+  const presentError = (error: unknown) => setToast(error instanceof ApiError ? (error.status === 429 ? "You’re sending requests quickly—please slow down a little." : error.message) : "Something went wrong. Please try again.");
+  const textMutation = useMutation({ mutationFn: submitText, onSuccess: setResult, onError: presentError });
+  const voiceMutation = useMutation({ mutationFn: submitVoice, onSuccess: setResult, onError: (error) => { if (error instanceof ApiError && error.status === 503) { setMicDisabled(true); setMicMessage("Voice input is not configured on this deployment."); } presentError(error); } });
+  const pending = textMutation.isPending || voiceMutation.isPending;
+  useEffect(() => () => { streamRef.current?.getTracks().forEach((track) => track.stop()); if (timeoutRef.current) window.clearTimeout(timeoutRef.current); }, []);
+  const runText = (event: React.FormEvent) => { event.preventDefault(); const clean = query.trim(); if (!clean || pending) return; setResult(null); textMutation.mutate({ query: clean, language: "hi", top_k: 10 }); };
+  const stopRecording = () => { if (timeoutRef.current) window.clearTimeout(timeoutRef.current); recorderRef.current?.stop(); };
+  const toggleRecording = async () => {
+    if (recording) { stopRecording(); return; }
+    if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) { setMicMessage("Audio recording is not supported by this browser."); return; }
+    try { const stream = await navigator.mediaDevices.getUserMedia({ audio: true }); streamRef.current = stream; const chunks: BlobPart[] = []; const recorder = new MediaRecorder(stream); recorderRef.current = recorder;
+      recorder.ondataavailable = (event) => { if (event.data.size) chunks.push(event.data); };
+      recorder.onstop = () => { stream.getTracks().forEach((track) => track.stop()); setRecording(false); const audio = new Blob(chunks, { type: recorder.mimeType || "audio/webm" }); if (audio.size) { setResult(null); voiceMutation.mutate(audio); } else setToast("No audio was captured. Please try again."); };
+      recorder.start(); setMicMessage(""); setRecording(true); timeoutRef.current = window.setTimeout(stopRecording, 29_500);
+    } catch { setMicMessage("Microphone permission was denied. Allow access in your browser settings to speak a question."); }
+  };
+  return <Toast.Provider swipeDirection="right"><div className="blobs" aria-hidden="true"><i className="blob one" /><i className="blob two" /><i className="blob three" /></div><main className="shell">
+    <nav className="nav"><div className="brand"><span className="brand-orb"><AudioLines size={21} /></span><span>संवाद</span></div><span className="ghost-credit">Built by <b>Ghost Packet</b></span></nav>
+    <section className="hero"><div className="hero-copy"><p className="eyebrow"><Sparkles size={15} /> Voice-enabled Hindi RAG</p><h1>Knowledge you can<br /><span>actually talk to.</span></h1><p>Ask out loud or type a question. Every answer is grounded in the indexed Hindi corpus—never a confident guess.</p></div><div className="hero-orb" aria-hidden="true"><div><Volume2 size={46} /><i /><i /><i /></div></div></section>
+    <section className="workspace"><form className="ask-card" onSubmit={runText}><div className="ask-top"><div><span className="section-kicker">Your question</span><h2>What would you like to know?</h2></div><span className="language-pill">हिंदी corpus</span></div><div className="input-row"><textarea id="question" value={query} onChange={(event) => setQuery(event.target.value)} onKeyDown={(event) => { if (event.key === "Enter" && !event.shiftKey) { event.preventDefault(); runText(event); } }} maxLength={2000} placeholder="मुझे भारत के बारे में बताइए…" rows={2} disabled={pending} aria-label="Your question" /><button type="button" className={`mic ${recording ? "recording" : ""}`} onClick={toggleRecording} disabled={pending || micDisabled} aria-label={recording ? "Stop recording" : "Ask with voice"}>{recording ? <Square size={18} fill="currentColor" /> : <Mic size={21} />}</button><button className="send" disabled={!query.trim() || pending}><span>Ask</span><Send size={18} /></button></div><div className="input-foot"><span>{recording ? "Listening… tap the stop button when you’re done" : "Press Enter to ask · Shift + Enter for a new line"}</span><span>{query.length}/2000</span></div>{micMessage && <p className="mic-note"><CircleAlert size={14} />{micMessage}</p>}</form>
+      <AnimatePresence mode="wait">{pending && <motion.div className="loading-card clay-card" initial={{ opacity: 0, y: 14 }} animate={{ opacity: 1, y: 0 }} exit={{ opacity: 0 }}><div className="loading-orb"><Sparkles size={22} /></div><div><strong>{voiceMutation.isPending ? "Listening, then searching…" : "Searching the corpus…"}</strong><p>Finding the strongest source passages for you.</p></div></motion.div>}{result && !pending && <ResultCard result={result} />}</AnimatePresence>
+    </section><footer><ShieldCheck size={16} /> Grounded answers only <span /> A Ghost Packet product</footer></main><Toast.Root className="toast" open={Boolean(toast)} onOpenChange={(open) => !open && setToast(null)}><Toast.Title>Request update</Toast.Title><Toast.Description>{toast}</Toast.Description><Toast.Close aria-label="Dismiss"><X size={16} /></Toast.Close></Toast.Root><Toast.Viewport className="toast-viewport" /></Toast.Provider>;
+}
+function ResultCard({ result }: { result: Result }) { const copy = modeCopy[result.mode]; const confidence = Math.round(result.confidence * 100); const stages = Object.entries(result.latency_ms).filter(([, value]) => typeof value === "number"); return <motion.article className={`result-card clay-card ${result.mode}`} initial="hidden" animate="visible" variants={{ hidden: { opacity: 0, y: 18 }, visible: { opacity: 1, y: 0, transition: { staggerChildren: 0.08 } } }}><motion.div variants={{ hidden: { opacity: 0, y: 8 }, visible: { opacity: 1, y: 0 } }} className="result-head"><div><span className="mode-badge">{result.mode === "generative" ? <Sparkles size={14} /> : <ShieldCheck size={14} />}{copy.label}</span><p>{copy.description}</p></div><span className="trace">#{result.trace_id.slice(0, 8)}</span></motion.div>{isVoice(result) && <motion.div variants={{ hidden: { opacity: 0 }, visible: { opacity: 1 } }} className="heard"><span className="heard-orb"><Volume2 size={17} /></span><div><span>Heard</span><p>{result.transcript}</p></div></motion.div>}<motion.p variants={{ hidden: { opacity: 0, y: 8 }, visible: { opacity: 1, y: 0 } }} className="answer">{result.answer_text}</motion.p><motion.div variants={{ hidden: { opacity: 0 }, visible: { opacity: 1 } }} className="confidence"><span>Confidence <b>{confidence}%</b></span><div><i style={{ width: `${confidence}%` }} /></div></motion.div>{result.guardrail_flags.length > 0 && <div className="flags">{result.guardrail_flags.map((flag) => <span key={flag}>{flag}</span>)}</div>}{result.evidence.length > 0 && <Accordion.Root type="single" collapsible className="sources"><Accordion.Item value="sources"><Accordion.Header><Accordion.Trigger>Sources <span>{result.evidence.length} cited <ChevronDown size={17} /></span></Accordion.Trigger></Accordion.Header><Accordion.Content>{result.evidence.map((evidence, index) => <motion.div initial={{ opacity: 0, x: -6 }} animate={{ opacity: 1, x: 0 }} transition={{ delay: index * 0.05 }} className="source" key={evidence.chunk_id}><div><span>Passage {index + 1}</span><code>{evidence.chunk_id}</code></div><p>{evidence.text}</p>{evidence.rerank_score !== null && <small>Relevance score {Math.round(evidence.rerank_score * 100)}%</small>}</motion.div>)}</Accordion.Content></Accordion.Item></Accordion.Root>}<Collapsible.Root className="details"><Collapsible.Trigger><Clock3 size={15} /> Details <span>Total {formatMs(result.latency_ms.total_ms)} <ChevronDown size={16} /></span></Collapsible.Trigger><Collapsible.Content><div className="timings">{stages.map(([name, value]) => <div key={name}><span>{name.replace("_ms", "").replace(/\b\w/g, (letter) => letter.toUpperCase())}</span><b>{formatMs(value as number)}</b></div>)}</div></Collapsible.Content></Collapsible.Root></motion.article>; }
+createRoot(document.getElementById("root")!).render(<QueryClientProvider client={new QueryClient()}><App /></QueryClientProvider>);

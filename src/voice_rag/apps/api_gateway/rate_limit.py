@@ -38,7 +38,13 @@ class InMemoryRateLimiter:
 
 
 class RateLimitMiddleware(BaseHTTPMiddleware):
-    def __init__(self, app, max_requests: int = 20, window_seconds: float = 60.0, paths: tuple[str, ...] = ("/v1/query",)):
+    def __init__(
+        self,
+        app,
+        max_requests: int = 20,
+        window_seconds: float = 60.0,
+        paths: tuple[str, ...] = ("/v1/query", "/v1/voice-query"),
+    ):
         super().__init__(app)
         self._limiter = InMemoryRateLimiter(max_requests, window_seconds)
         self._paths = paths
@@ -49,6 +55,6 @@ class RateLimitMiddleware(BaseHTTPMiddleware):
             if not self._limiter.allow(client_ip):
                 return JSONResponse(
                     status_code=429,
-                    content={"error": {"code": 429, "message": "Rate limit exceeded, try again shortly."}},
+                content={"detail": "Rate limit exceeded, try again shortly."},
                 )
         return await call_next(request)

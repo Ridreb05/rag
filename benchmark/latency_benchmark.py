@@ -27,6 +27,7 @@ import json
 import logging
 import sys
 import time
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
 import numpy as np
@@ -82,6 +83,42 @@ def run_benchmark(
     client = get_client(path=None if qdrant_url else qdrant_path, url=qdrant_url)
     coll = collection_name(language, index_version)
     bm25 = Bm25Index(bm25_path)
+    executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="retrieval")
+
+    def _timed(fn):
+        t0 = time.perf_counter()
+        result = fn()
+        return result, (time.perf_counter() - t0) * 1000
+
+    def _retrieve(q_embed, query_text, k):
+        """Runs dense/sparse (Qdrant round trips) and BM25 (local) concurrently
+        — they're independent given q_embed. Returns hits plus each signal's
+        own elapsed time (for the per-stage breakdown) and the actual wall
+        time of the parallel window (for the honest total)."""
+        t_wall0 = time.perf_counter()
+        dense_f = executor.submit(
+            _timed,
+            lambda: client.query_points(
+                collection_name=coll, query=q_embed.dense[0].tolist(), using="dense", limit=k
+            ).points,
+        )
+        sparse_f = executor.submit(
+            _timed,
+            lambda: client.query_points(
+                collection_name=coll,
+                query=models.SparseVector(
+                    indices=list(q_embed.sparse[0].keys()), values=list(q_embed.sparse[0].values())
+                ),
+                using="sparse",
+                limit=k,
+            ).points,
+        )
+        bm25_f = executor.submit(_timed, lambda: bm25.search(query_text, top_k=k))
+        (dense_hits, dense_ms) = dense_f.result()
+        (sparse_hits, sparse_ms) = sparse_f.result()
+        (bm25_hits, bm25_ms) = bm25_f.result()
+        wall_ms = (time.perf_counter() - t_wall0) * 1000
+        return dense_hits, sparse_hits, bm25_hits, dense_ms, sparse_ms, bm25_ms, wall_ms
 
     logger.info("Warming models (first call pays one-time CUDA/allocator warmup cost)...")
     _ = embedding.embed_query("warmup query")
@@ -109,22 +146,12 @@ def run_benchmark(
         q_embed = embedding.embed_query(query_text)
         stage_timings["embedding_ms"].append((time.perf_counter() - t0) * 1000)
 
-        t0 = time.perf_counter()
-        dense_hits = client.query_points(
-            collection_name=coll, query=q_embed.dense[0].tolist(), using="dense", limit=top_k_per_signal
-        ).points
-        stage_timings["dense_retrieval_ms"].append((time.perf_counter() - t0) * 1000)
-
-        t0 = time.perf_counter()
-        sparse_vec = models.SparseVector(indices=list(q_embed.sparse[0].keys()), values=list(q_embed.sparse[0].values()))
-        sparse_hits = client.query_points(
-            collection_name=coll, query=sparse_vec, using="sparse", limit=top_k_per_signal
-        ).points
-        stage_timings["sparse_retrieval_ms"].append((time.perf_counter() - t0) * 1000)
-
-        t0 = time.perf_counter()
-        bm25_hits = bm25.search(query_text, top_k=top_k_per_signal)
-        stage_timings["bm25_ms"].append((time.perf_counter() - t0) * 1000)
+        dense_hits, sparse_hits, bm25_hits, dense_ms, sparse_ms, bm25_ms, _wall = _retrieve(
+            q_embed, query_text, top_k_per_signal
+        )
+        stage_timings["dense_retrieval_ms"].append(dense_ms)
+        stage_timings["sparse_retrieval_ms"].append(sparse_ms)
+        stage_timings["bm25_ms"].append(bm25_ms)
 
         t0 = time.perf_counter()
         payload_by_id = {h.payload["chunk_id"]: h.payload for h in [*dense_hits, *sparse_hits]}
@@ -168,14 +195,7 @@ def run_benchmark(
 
         t0 = time.perf_counter()
         q_embed = embedding.embed_query(query_text)
-        dense_hits = client.query_points(
-            collection_name=coll, query=q_embed.dense[0].tolist(), using="dense", limit=top_k_per_signal
-        ).points
-        sparse_vec = models.SparseVector(indices=list(q_embed.sparse[0].keys()), values=list(q_embed.sparse[0].values()))
-        sparse_hits = client.query_points(
-            collection_name=coll, query=sparse_vec, using="sparse", limit=top_k_per_signal
-        ).points
-        bm25_hits = bm25.search(query_text, top_k=top_k_per_signal)
+        dense_hits, sparse_hits, bm25_hits, *_ = _retrieve(q_embed, query_text, top_k_per_signal)
         payload_by_id = {h.payload["chunk_id"]: h.payload for h in [*dense_hits, *sparse_hits]}
         fused = reciprocal_rank_fusion(
             [[h.payload["chunk_id"] for h in dense_hits], [h.payload["chunk_id"] for h in sparse_hits], [c for c, _ in bm25_hits]]
@@ -252,6 +272,7 @@ def write_markdown(result: dict, out_path: Path) -> None:
         "fully generated multi-sentence answer cannot realistically fit a 200ms budget on any "
         "current LLM serving stack, local or API-based."
     )
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -269,8 +290,8 @@ def main() -> None:
     # the benchmark index was built with that script using --index-version benchmark.
     parser.add_argument("--qdrant-path", default="data/api_smoketest/qdrant")
     parser.add_argument("--bm25-path", default="data/api_smoketest/bm25/hi_validation")
-    parser.add_argument("--top-k-per-signal", type=int, default=20)
-    parser.add_argument("--rerank-candidates", type=int, default=20)
+    parser.add_argument("--top-k-per-signal", type=int, default=8)
+    parser.add_argument("--rerank-candidates", type=int, default=8)
     parser.add_argument(
         "--qdrant-url",
         default=None,
@@ -297,7 +318,7 @@ def main() -> None:
     json_path.write_text(json.dumps(result, indent=2), encoding="utf-8")
     logger.info("Wrote %s", json_path)
 
-    md_path = Path("docs/latency-benchmark-results.md")
+    md_path = RESULTS_DIR / f"{args.language}_{args.index_version}.md"
     write_markdown(result, md_path)
     logger.info("Wrote %s", md_path)
 

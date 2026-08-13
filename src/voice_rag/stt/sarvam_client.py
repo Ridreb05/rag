@@ -58,13 +58,18 @@ class SarvamSttClient:
         self._client = httpx.Client(timeout=timeout)
 
     def transcribe_bytes(
-        self, audio_bytes: bytes, filename: str = "audio.wav", model: str = STT_MODEL, mode: str = "transcribe"
+        self,
+        audio_bytes: bytes,
+        filename: str = "audio.wav",
+        model: str = STT_MODEL,
+        mode: str = "transcribe",
+        content_type: str = "audio/wav",
     ) -> SttResult:
         resp = self._client.post(
             f"{BASE_URL}/speech-to-text",
             headers={"api-subscription-key": self.api_key},
             data={"model": model, "mode": mode},
-            files={"file": (filename, audio_bytes, "audio/wav")},
+            files={"file": (filename, audio_bytes, content_type)},
         )
         resp.raise_for_status()
         data = resp.json()

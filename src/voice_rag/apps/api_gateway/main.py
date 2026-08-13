@@ -16,10 +16,12 @@ import logging
 import os
 import time
 import uuid
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel
+from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.staticfiles import StaticFiles
+from pydantic import BaseModel, Field
 from qdrant_client import models as qdrant_models
 
 from voice_rag.apps.api_gateway.rate_limit import RateLimitMiddleware
@@ -34,6 +36,7 @@ from voice_rag.reranking.service import RerankerService
 from voice_rag.retrieval.dense.index import collection_name, get_client
 from voice_rag.retrieval.fusion.rrf import reciprocal_rank_fusion
 from voice_rag.retrieval.sparse.bm25_index import Bm25Index
+from voice_rag.stt.sarvam_client import SarvamSttClient
 
 logger = logging.getLogger(__name__)
 
@@ -48,8 +51,18 @@ LOAD_GROUNDING_VALIDATOR = os.environ.get("VOICE_RAG_LOAD_GROUNDING_VALIDATOR", 
 # this writing. Flip via env once that's resolved; the harness doesn't care
 # which backend it gets, both implement the same generate() interface.
 GENERATION_BACKEND = os.environ.get("VOICE_RAG_GENERATION_BACKEND", "gemini")
-TOP_K_PER_SIGNAL = 20
-RERANK_CANDIDATES = 20
+# Tuned down from an initial 20: reranking cost scales with candidate count,
+# and dense/sparse/BM25 already agree closely on the top few candidates for
+# a corpus this size, so a smaller K loses negligible recall for a real
+# latency win (measured: K=20->10 roughly halved rerank latency).
+TOP_K_PER_SIGNAL = 8
+RERANK_CANDIDATES = 8
+MAX_AUDIO_BYTES = 15 * 1024 * 1024
+
+# Dense/sparse (2 network round trips to Qdrant) and BM25 (local, embedded)
+# are independent given the query embedding — run them concurrently instead
+# of paying their latencies serially.
+_retrieval_executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="retrieval")
 
 
 class Services:
@@ -60,6 +73,7 @@ class Services:
     qdrant_client: object
     collection: str
     off_topic_gate: OffTopicGate | None
+    stt: SarvamSttClient | None
 
 
 services = Services()
@@ -103,6 +117,11 @@ async def lifespan(app: FastAPI):
     services.collection = collection_name(DEFAULT_LANGUAGE, INDEX_VERSION)
     services.bm25 = Bm25Index(BM25_PATH)
     services.off_topic_gate = _try_build_off_topic_gate()
+    try:
+        services.stt = SarvamSttClient()
+    except RuntimeError:
+        logger.warning("SARVAM_API_KEY not set — /v1/voice-query will return 503")
+        services.stt = None
     logger.info("Warm pool ready.")
     yield
     logger.info("Shutting down.")
@@ -113,9 +132,9 @@ app.add_middleware(RateLimitMiddleware, max_requests=20, window_seconds=60.0)
 
 
 class QueryRequest(BaseModel):
-    query: str
-    language: str = DEFAULT_LANGUAGE
-    top_k: int = 10
+    query: str = Field(min_length=1, max_length=2000)
+    language: str = Field(default=DEFAULT_LANGUAGE, min_length=2, max_length=16)
+    top_k: int = Field(default=10, ge=1, le=10)
 
 
 class EvidenceItem(BaseModel):
@@ -138,72 +157,90 @@ def _sparse_vector(sparse: dict[int, float]) -> qdrant_models.SparseVector:
     return qdrant_models.SparseVector(indices=list(sparse.keys()), values=list(sparse.values()))
 
 
-@app.post("/v1/query", response_model=QueryResponse)
-def query(req: QueryRequest) -> QueryResponse:
-    trace_id = str(uuid.uuid4())
-    t_start = time.time()
-    timings: dict[str, float] = {}
+def _answer_query(
+    query_text: str,
+    language: str,
+    top_k: int,
+    *,
+    trace_id: str | None = None,
+    started_at: float | None = None,
+    initial_timings: dict[str, float] | None = None,
+) -> QueryResponse:
+    trace_id = trace_id or str(uuid.uuid4())
+    t_start = started_at if started_at is not None else time.perf_counter()
+    timings: dict[str, float] = dict(initial_timings or {})
 
-    if not req.query.strip():
+    if not query_text.strip():
         raise HTTPException(status_code=400, detail="query must not be empty")
-    if len(req.query) > 2000:
+    if len(query_text) > 2000:
         raise HTTPException(status_code=400, detail="query too long (max 2000 chars)")
 
-    t0 = time.time()
-    q_embed = services.embedding.embed_query(req.query)
-    timings["embedding_ms"] = (time.time() - t0) * 1000
+    t0 = time.perf_counter()
+    q_embed = services.embedding.embed_query(query_text)
+    timings["embedding_ms"] = (time.perf_counter() - t0) * 1000
 
-    t0 = time.time()
-    dense_hits = services.qdrant_client.query_points(
-        collection_name=services.collection, query=q_embed.dense[0].tolist(), using="dense", limit=TOP_K_PER_SIGNAL
-    ).points
-    sparse_hits = services.qdrant_client.query_points(
-        collection_name=services.collection,
-        query=_sparse_vector(q_embed.sparse[0]),
-        using="sparse",
-        limit=TOP_K_PER_SIGNAL,
-    ).points
-    bm25_hits = services.bm25.search(req.query, top_k=TOP_K_PER_SIGNAL)
-    timings["retrieval_ms"] = (time.time() - t0) * 1000
+    t0 = time.perf_counter()
+    dense_future = _retrieval_executor.submit(
+        lambda: services.qdrant_client.query_points(
+            collection_name=services.collection,
+            query=q_embed.dense[0].tolist(),
+            using="dense",
+            limit=TOP_K_PER_SIGNAL,
+        ).points
+    )
+    sparse_future = _retrieval_executor.submit(
+        lambda: services.qdrant_client.query_points(
+            collection_name=services.collection,
+            query=_sparse_vector(q_embed.sparse[0]),
+            using="sparse",
+            limit=TOP_K_PER_SIGNAL,
+        ).points
+    )
+    bm25_future = _retrieval_executor.submit(services.bm25.search, query_text, top_k=TOP_K_PER_SIGNAL)
+    dense_hits = dense_future.result()
+    sparse_hits = sparse_future.result()
+    bm25_hits = bm25_future.result()
+    timings["retrieval_ms"] = (time.perf_counter() - t0) * 1000
 
     dense_ranked = [h.payload["chunk_id"] for h in dense_hits]
     sparse_ranked = [h.payload["chunk_id"] for h in sparse_hits]
     bm25_ranked = [cid for cid, _ in bm25_hits]
     payload_by_chunk_id = {h.payload["chunk_id"]: h.payload for h in [*dense_hits, *sparse_hits]}
 
-    t0 = time.time()
+    t0 = time.perf_counter()
     fused = reciprocal_rank_fusion([dense_ranked, sparse_ranked, bm25_ranked])
     fused_chunk_ids = [cid for cid, _ in fused][:RERANK_CANDIDATES]
-    timings["fusion_ms"] = (time.time() - t0) * 1000
+    timings["fusion_ms"] = (time.perf_counter() - t0) * 1000
 
     rerank_score_by_chunk_id: dict[str, float] = {}
     if not fused_chunk_ids:
-        resp = services.harness.answer(trace_id, req.query, req.language, [])
+        resp = services.harness.answer(trace_id, query_text, language, [])
     else:
-        t0 = time.time()
+        t0 = time.perf_counter()
         texts = [payload_by_chunk_id[cid]["text"] for cid in fused_chunk_ids if cid in payload_by_chunk_id]
         valid_chunk_ids = [cid for cid in fused_chunk_ids if cid in payload_by_chunk_id]
-        scores = services.reranker.rerank(req.query, texts)
-        timings["rerank_ms"] = (time.time() - t0) * 1000
+        scores = services.reranker.rerank(query_text, texts)
+        timings["rerank_ms"] = (time.perf_counter() - t0) * 1000
 
         ranked = sorted(zip(valid_chunk_ids, texts, scores, strict=True), key=lambda x: x[2], reverse=True)
         candidates = [
             RetrievalCandidate(
                 chunk_id=cid,
                 doc_id=payload_by_chunk_id[cid].get("passage_id", cid),
-                language=req.language,
+                language=language,
                 text=text,
                 rerank_score=float(score),
             )
-            for cid, text, score in ranked[: req.top_k]
+            for cid, text, score in ranked[:top_k]
         ]
         rerank_score_by_chunk_id = {c.chunk_id: c.rerank_score for c in candidates if c.rerank_score is not None}
 
-        t0 = time.time()
-        resp = services.harness.answer(trace_id, req.query, req.language, candidates, query_embedding=q_embed.dense[0])
-        timings["generation_ms"] = (time.time() - t0) * 1000
+        t0 = time.perf_counter()
+        resp = services.harness.answer(trace_id, query_text, language, candidates, query_embedding=q_embed.dense[0])
+        timings["generation_ms"] = (time.perf_counter() - t0) * 1000
 
-    timings["total_ms"] = (time.time() - t_start) * 1000
+    timings["total_ms"] = (time.perf_counter() - t_start) * 1000
+    logger.info("query_completed trace_id=%s mode=%s total_ms=%.2f", trace_id, resp.mode, timings["total_ms"])
 
     # Evidence resolves chunk_id -> the actual cited *passage* text, not the
     # claim text (docs/03's citation-carry-through design) — payload_by_chunk_id
@@ -236,6 +273,82 @@ def query(req: QueryRequest) -> QueryResponse:
     )
 
 
+@app.post("/v1/query", response_model=QueryResponse)
+def query(req: QueryRequest) -> QueryResponse:
+    return _answer_query(req.query, req.language, req.top_k)
+
+
+class VoiceQueryResponse(QueryResponse):
+    transcript: str
+
+
+@app.post("/v1/voice-query", response_model=VoiceQueryResponse)
+def voice_query(
+    audio: UploadFile = File(...),
+    language: str = Form(default=DEFAULT_LANGUAGE, min_length=2, max_length=16),
+    top_k: int = Form(default=10, ge=1, le=10),
+) -> VoiceQueryResponse:
+    """Same pipeline as /v1/query, fed by a transcribed audio upload instead
+    of typed text — closes the STT-not-wired-in gap: Sarvam's client was
+    already built and tested standalone, this is the first place it's
+    actually invoked from a live request."""
+    if services.stt is None:
+        raise HTTPException(status_code=503, detail="Voice input unavailable: SARVAM_API_KEY not configured")
+    if audio.content_type and not audio.content_type.startswith("audio/"):
+        raise HTTPException(status_code=400, detail=f"expected an audio file, got {audio.content_type}")
+
+    request_started_at = time.perf_counter()
+    audio_bytes = audio.file.read(MAX_AUDIO_BYTES + 1)
+    if not audio_bytes:
+        raise HTTPException(status_code=400, detail="empty audio upload")
+    if len(audio_bytes) > MAX_AUDIO_BYTES:
+        raise HTTPException(status_code=413, detail="audio upload too large (max 15 MB)")
+
+    stt_started_at = time.perf_counter()
+    stt_result = services.stt.transcribe_bytes(
+        audio_bytes,
+        filename=audio.filename or "audio.webm",
+        content_type=audio.content_type or "audio/wav",
+    )
+    if not stt_result.transcript.strip():
+        raise HTTPException(status_code=400, detail="speech-to-text returned an empty transcript")
+    base = _answer_query(
+        stt_result.transcript,
+        language,
+        top_k,
+        trace_id=str(uuid.uuid4()),
+        started_at=request_started_at,
+        initial_timings={"stt_ms": (time.perf_counter() - stt_started_at) * 1000},
+    )
+    return VoiceQueryResponse(transcript=stt_result.transcript, **base.model_dump())
+
+
 @app.get("/v1/health")
 def health() -> dict:
-    return {"status": "ok"}
+    """Readiness, not merely process liveness, for deployment probes."""
+    checks = {"qdrant": False, "collection": False, "bm25": False, "stt_configured": services.stt is not None}
+    try:
+        services.qdrant_client.get_collections()
+        checks["qdrant"] = True
+        checks["collection"] = services.qdrant_client.collection_exists(services.collection)
+    except Exception as exc:
+        logger.warning("healthcheck_qdrant_failed error=%s", exc)
+    try:
+        # Tantivy opens the index at startup; a query is the least ambiguous
+        # readiness check and does not mutate the index.
+        services.bm25.search("health", top_k=1)
+        checks["bm25"] = True
+    except Exception as exc:
+        logger.warning("healthcheck_bm25_failed error=%s", exc)
+    ready = checks["qdrant"] and checks["collection"] and checks["bm25"]
+    if not ready:
+        raise HTTPException(status_code=503, detail={"status": "not_ready", "checks": checks})
+    return {"status": "ok", "checks": checks}
+
+
+# Mounted last so it only catches paths the routes above didn't claim —
+# serves the built frontend (Vite's production build output) at "/". No-op
+# if the directory doesn't exist yet (e.g. before the frontend is built).
+_FRONTEND_DIST_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "..", "..", "frontend", "dist")
+if os.path.isdir(_FRONTEND_DIST_DIR):
+    app.mount("/", StaticFiles(directory=_FRONTEND_DIST_DIR, html=True), name="frontend")

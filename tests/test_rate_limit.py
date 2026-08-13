@@ -1,6 +1,7 @@
 import time
 
 from voice_rag.apps.api_gateway.rate_limit import InMemoryRateLimiter
+from voice_rag.apps.api_gateway.rate_limit import RateLimitMiddleware
 
 
 def test_allows_up_to_max_requests():
@@ -28,3 +29,9 @@ def test_window_expiry_allows_new_requests():
     assert limiter.allow("x") is False
     time.sleep(0.3)
     assert limiter.allow("x") is True
+
+
+def test_voice_endpoint_is_rate_limited_by_default():
+    middleware = RateLimitMiddleware(app=lambda scope, receive, send: None)
+    assert "/v1/query" in middleware._paths
+    assert "/v1/voice-query" in middleware._paths

@@ -144,3 +144,25 @@ def test_claim_with_no_matching_citation_is_dropped():
 
     assert resp.mode == "refused"
     assert "unsupported_claim_no_citation" in resp.guardrail_flags
+
+
+def test_grounding_rebuilds_answer_from_surviving_claims():
+    class SelectiveValidator:
+        def validate_claim(self, claim_text, evidence_texts):
+            score = 0.95 if claim_text == "Grounded claim." else 0.05
+            return ClaimValidation(entailment_score=score, contradiction_score=0.0, best_evidence_index=0)
+
+    mid = (EXTRACTIVE_CONFIDENCE_THRESHOLD + LOW_CONFIDENCE_THRESHOLD) / 2
+    generated = GeneratedAnswer(
+        answer_text="Grounded claim. Unsupported claim.",
+        claims=[
+            GeneratedClaim(text="Grounded claim.", cited_chunk_ids=["c1"]),
+            GeneratedClaim(text="Unsupported claim.", cited_chunk_ids=["c1"]),
+        ],
+    )
+    resp = GenerationHarness(generator=FakeGenerator(generated), grounding_validator=SelectiveValidator()).answer(
+        "t9", "query", "en", [make_candidate(rerank_score=mid)]
+    )
+
+    assert resp.answer_text == "Grounded claim."
+    assert "unsupported_claim_low_entailment" in resp.guardrail_flags
