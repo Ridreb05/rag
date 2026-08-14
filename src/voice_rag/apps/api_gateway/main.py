@@ -390,8 +390,13 @@ def export_index(token: str) -> FileResponse:
         raise HTTPException(status_code=403, detail="invalid or unconfigured export token")
 
     qdrant_base = QDRANT_URL or "http://127.0.0.1:6333"
-    snapshot = services.qdrant_client.create_snapshot(collection_name=services.collection)
-    snapshot_name = snapshot.name
+    # services.qdrant_client keeps the SDK default ~5s timeout, which is
+    # correct for the hot query path but far too short for creating a
+    # snapshot across every segment of a 964K-point collection (minutes,
+    # not seconds). Call the REST endpoint directly with a real budget.
+    create_resp = httpx.post(f"{qdrant_base}/collections/{services.collection}/snapshots", timeout=1800.0)
+    create_resp.raise_for_status()
+    snapshot_name = create_resp.json()["result"]["name"]
 
     # tempfile's default dir (system /tmp) sits on the small container disk,
     # not the persistent volume — a multi-GB snapshot exhausts it immediately.
