@@ -23,6 +23,11 @@ from qdrant_client import QdrantClient, models
 logger = logging.getLogger(__name__)
 
 DENSE_DIM = 1024
+DEFAULT_HNSW_M = 16
+# Qdrant v1.13.4's production default, expressed in kilobytes.  Restoring a
+# positive value after bulk upload lets Qdrant build its dense and immutable
+# sparse indexes again.
+DEFAULT_INDEXING_THRESHOLD_KB = 20_000
 
 
 def collection_name(language: str, index_version: str) -> str:
@@ -35,12 +40,37 @@ def get_client(path: str | None = "data/qdrant_local", url: str | None = None) -
     return QdrantClient(path=path)
 
 
-def ensure_collection(client: QdrantClient, name: str, recreate: bool = False) -> None:
+def ensure_collection(
+    client: QdrantClient,
+    name: str,
+    recreate: bool = False,
+    *,
+    defer_dense_hnsw: bool = False,
+) -> None:
+    """Create the hybrid collection when it does not already exist.
+
+    ``defer_dense_hnsw`` is an explicit bulk-load mode.  Qdrant otherwise
+    starts building dense HNSW segments and compact sparse indexes while
+    points are still arriving, which competes with ingestion for CPU, memory,
+    and disk I/O.  It sets ``m=0`` and ``indexing_threshold=0`` so those
+    optimizations are deferred until :func:`enable_dense_hnsw` is called after
+    the upload.  The dense vectors and named sparse vector themselves remain
+    identical, so retrieval semantics are preserved once indexing is restored.
+
+    We deliberately do not create a ``language`` payload index.  Collections
+    are already partitioned by language and no query path filters on that
+    field, so indexing it adds optimizer work without serving a request.
+    """
     exists = client.collection_exists(name)
     if exists and not recreate:
         return
     if exists and recreate:
         client.delete_collection(name)
+
+    hnsw_config = models.HnswConfigDiff(m=0) if defer_dense_hnsw else None
+    optimizers_config = (
+        models.OptimizersConfigDiff(indexing_threshold=0) if defer_dense_hnsw else None
+    )
     client.create_collection(
         collection_name=name,
         vectors_config={
@@ -49,11 +79,69 @@ def ensure_collection(client: QdrantClient, name: str, recreate: bool = False) -
         sparse_vectors_config={
             "sparse": models.SparseVectorParams(),
         },
+        hnsw_config=hnsw_config,
+        optimizers_config=optimizers_config,
     )
-    # payload index on language for cheap filtered search, per docs/02
-    client.create_payload_index(
-        collection_name=name, field_name="language", field_schema=models.PayloadSchemaType.KEYWORD
+
+
+def enable_dense_hnsw(client: QdrantClient, name: str, m: int = DEFAULT_HNSW_M) -> None:
+    """Restore normal HNSW and optimizer settings after a bulk upload.
+
+    The collection retains its existing dense/sparse points and payloads.
+    Qdrant schedules the graph build asynchronously, so callers should wait
+    for the collection optimizer to report healthy before accepting traffic.
+    """
+    if m < 1:
+        raise ValueError("HNSW m must be at least 1 when enabling the index")
+    client.update_collection(
+        collection_name=name,
+        hnsw_config=models.HnswConfigDiff(m=m),
+        optimizers_config=models.OptimizersConfigDiff(
+            indexing_threshold=DEFAULT_INDEXING_THRESHOLD_KB
+        ),
     )
+
+
+def verify_bulk_upload_config(client: QdrantClient, name: str) -> None:
+    """Fail fast if a Qdrant server did not apply deferred bulk settings.
+
+    A silent fallback to Qdrant defaults would recreate the expensive
+    optimizer work during upload.  Verify it immediately, before any model
+    download or embedding work is started.
+    """
+    info = client.get_collection(name)
+    hnsw_m = info.config.hnsw_config.m
+    indexing_threshold = info.config.optimizer_config.indexing_threshold
+    logger.info(
+        "Qdrant bulk config collection=%s hnsw_m=%s indexing_threshold=%s",
+        name,
+        hnsw_m,
+        indexing_threshold,
+    )
+    if hnsw_m != 0 or indexing_threshold != 0:
+        raise RuntimeError(
+            f"Qdrant did not apply deferred bulk settings for {name!r}: "
+            f"hnsw_m={hnsw_m!r}, indexing_threshold={indexing_threshold!r}. "
+            "Refusing to upload into a configuration that can optimize mid-ingestion."
+        )
+
+
+def verify_search_index_config(client: QdrantClient, name: str) -> None:
+    """Confirm the normal retrieval indexes were restored before readiness."""
+    info = client.get_collection(name)
+    hnsw_m = info.config.hnsw_config.m
+    indexing_threshold = info.config.optimizer_config.indexing_threshold
+    logger.info(
+        "Qdrant search config collection=%s hnsw_m=%s indexing_threshold=%s",
+        name,
+        hnsw_m,
+        indexing_threshold,
+    )
+    if hnsw_m < 1 or indexing_threshold <= 0:
+        raise RuntimeError(
+            f"Qdrant did not restore search indexing for {name!r}: "
+            f"hnsw_m={hnsw_m!r}, indexing_threshold={indexing_threshold!r}."
+        )
 
 
 @dataclass

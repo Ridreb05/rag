@@ -41,6 +41,18 @@ def test_bm25_empty_query_returns_no_crash():
         assert results == []
 
 
+def test_bm25_upsert_batch_replaces_replayed_chunk_ids():
+    """A restarted full-index build may replay its final committed batch."""
+    with tempfile.TemporaryDirectory() as d:
+        idx = Bm25Index(d)
+        idx.upsert_batch(["c1"], ["oldonlyterm"])
+        idx.upsert_batch(["c1", "c2"], ["newonlyterm", "secondterm"])
+
+        assert idx.search("oldonlyterm", top_k=5) == []
+        assert [cid for cid, _ in idx.search("newonlyterm", top_k=5)] == ["c1"]
+        assert [cid for cid, _ in idx.search("secondterm", top_k=5)] == ["c2"]
+
+
 def test_bm25_handles_query_syntax_characters_in_real_text():
     # Regression test: an ordinary Hindi passage containing a hyphen
     # ("एक अवैध वाहन - यान ले जाना एक अपराध है") previously crashed

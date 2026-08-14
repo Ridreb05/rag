@@ -12,12 +12,14 @@ local embedded mode via QDRANT_PATH for local dev.
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
+from pathlib import Path
 
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.staticfiles import StaticFiles
@@ -44,7 +46,17 @@ DEFAULT_LANGUAGE = os.environ.get("VOICE_RAG_LANGUAGE", "hi")
 INDEX_VERSION = os.environ.get("VOICE_RAG_INDEX_VERSION", "full1")
 QDRANT_URL = os.environ.get("QDRANT_URL")
 QDRANT_PATH = os.environ.get("QDRANT_PATH", "data/full_index/qdrant")
-BM25_PATH = os.environ.get("BM25_PATH", f"data/full_index/bm25/{DEFAULT_LANGUAGE}_validation")
+BM25_PATH = os.environ.get("BM25_PATH", f"data/full_index/bm25/{DEFAULT_LANGUAGE}_validation_{INDEX_VERSION}")
+INDEX_STATE_PATH = Path(
+    os.environ.get(
+        "VOICE_RAG_INDEX_STATE_PATH",
+        f"data/full_index/{DEFAULT_LANGUAGE}_validation_{INDEX_VERSION}.state.json",
+    )
+)
+# The RunPod entrypoint enables this only after it has completed a bootstrap.
+# Keeping it opt-in preserves the lightweight local-dev workflow where a
+# developer may deliberately point the API at a small hand-built collection.
+REQUIRE_COMPLETE_INDEX = os.environ.get("VOICE_RAG_REQUIRE_COMPLETE_INDEX", "0") == "1"
 LOAD_GROUNDING_VALIDATOR = os.environ.get("VOICE_RAG_LOAD_GROUNDING_VALIDATOR", "1") == "1"
 # "gemini" is the working default — the Anthropic integration is code-verified
 # correct (docs/evaluation-results.md) but blocked on account credits as of
@@ -163,6 +175,29 @@ class QueryResponse(BaseModel):
 
 def _sparse_vector(sparse: dict[int, float]) -> qdrant_models.SparseVector:
     return qdrant_models.SparseVector(indices=list(sparse.keys()), values=list(sparse.values()))
+
+
+def _read_completed_index_state() -> tuple[bool, int | None]:
+    """Return whether the deployment bootstrap recorded a complete index.
+
+    A Qdrant collection can exist while an interrupted upload is still only
+    partially populated.  The versioned state manifest is written atomically
+    by ``build_full_index.py`` after both Qdrant and BM25 are fully committed.
+    """
+    if not REQUIRE_COMPLETE_INDEX:
+        return True, None
+    try:
+        state = json.loads(INDEX_STATE_PATH.read_text(encoding="utf-8"))
+        total = int(state["total"])
+        complete = (
+            state.get("stage") == "completed"
+            and state.get("dense_hnsw_deferred") is False
+            and int(state.get("next_offset", -1)) == total
+        )
+        return complete and total >= 0, total
+    except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
+        logger.warning("healthcheck_index_state_failed path=%s error=%s", INDEX_STATE_PATH, exc)
+        return False, None
 
 
 def _answer_query(
@@ -334,11 +369,34 @@ def voice_query(
 @app.get("/v1/health")
 def health() -> dict:
     """Readiness, not merely process liveness, for deployment probes."""
-    checks = {"qdrant": False, "collection": False, "bm25": False, "stt_configured": services.stt is not None}
+    checks = {
+        "qdrant": False,
+        "collection": False,
+        "bm25": False,
+        "index_complete": False,
+        "stt_configured": services.stt is not None,
+    }
+    expected_points: int | None = None
     try:
         services.qdrant_client.get_collections()
         checks["qdrant"] = True
         checks["collection"] = services.qdrant_client.collection_exists(services.collection)
+        manifest_complete, expected_points = _read_completed_index_state()
+        if manifest_complete and checks["collection"]:
+            if expected_points is None:
+                checks["index_complete"] = True
+            else:
+                actual_points = services.qdrant_client.count(
+                    collection_name=services.collection, exact=True
+                ).count
+                checks["index_complete"] = actual_points == expected_points
+                if not checks["index_complete"]:
+                    logger.warning(
+                        "healthcheck_index_count_mismatch collection=%s expected=%d actual=%d",
+                        services.collection,
+                        expected_points,
+                        actual_points,
+                    )
     except Exception as exc:
         logger.warning("healthcheck_qdrant_failed error=%s", exc)
     try:
@@ -348,7 +406,7 @@ def health() -> dict:
         checks["bm25"] = True
     except Exception as exc:
         logger.warning("healthcheck_bm25_failed error=%s", exc)
-    ready = checks["qdrant"] and checks["collection"] and checks["bm25"]
+    ready = checks["qdrant"] and checks["collection"] and checks["bm25"] and checks["index_complete"]
     if not ready:
         raise HTTPException(status_code=503, detail={"status": "not_ready", "checks": checks})
     return {"status": "ok", "checks": checks}

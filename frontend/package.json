@@ -10,8 +10,10 @@
   },
   "dependencies": {
     "@fontsource/dm-sans": "^5.2.6",
+    "@fontsource/imbue": "^5.3.0",
     "@fontsource/noto-sans-devanagari": "^5.2.6",
     "@fontsource/nunito": "^5.2.6",
+    "@fontsource/victor-mono": "^5.3.0",
     "@radix-ui/react-accordion": "^1.2.12",
     "@radix-ui/react-collapsible": "^1.1.12",
     "@radix-ui/react-toast": "^1.2.12",

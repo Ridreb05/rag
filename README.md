@@ -340,13 +340,14 @@ per-claim NLI check) → typed `AnswerResponse`.
 
 ## Honestly incomplete
 
-- **Full-corpus indexing.** The Hindi validation split is 964,603 chunks; the local index build
-  (`data/full_index_build.log`) had reached **320,000 / 964,603 (33.2%)** at ~235 chunks/sec
-  when last snapshotted — the same code path (`scripts/build_full_index.py`) scales to
-  completion, and `RUNPOD.md`'s deployment bootstraps this on first Pod start
-  (`VOICE_RAG_BOOTSTRAP_INDEX=1`). All latency numbers above are measured on substantial real
-  subsets, not the finished full index, and are not expected to change materially with scale
-  (retrieval cost here is dominated by embedding + rerank, not index size).
+- **Full-corpus indexing.** The Hindi validation split is 964,603 chunks and is not claimed as
+  complete until the deployment's versioned state manifest and exact Qdrant point count agree.
+  `scripts/build_full_index.py` checkpoints each committed Qdrant+BM25 batch atomically, so a
+  stopped Pod resumes rather than re-embedding completed batches. During bulk upload it defers
+  Qdrant's dense/sparse index optimization and enables the normal search indexes only after all
+  vectors arrive. The latency numbers above are measured on substantial real subsets, not a
+  finished full-corpus RunPod measurement; benchmark the completed final hardware deployment
+  before reporting final submission values.
 - **Voice is wired, but not streaming.** `POST /v1/voice-query` is real, tested, and live —
   record, upload as one multipart request, transcribe, answer. What's *not* built is a
   streaming WebSocket with partial-transcript speculative retrieval; today's voice path is
@@ -422,8 +423,9 @@ docker compose up --build app
 `RUNPOD.md` covers the single-Pod path this repo actually ships as: GitHub Actions publishes
 `ghcr.io/ridreb05/voice-rag:runpod` on every push to `master`
 ([workflow](.github/workflows/container.yml)); a Pod with an RTX 4090 pulls that image, bootstraps
-the index on first boot, and serves the built frontend directly from FastAPI. No public URL is
-kept running between test sessions — see `DEPLOYMENT.md` for the exact pre-flight checklist.
+the index on first boot, and serves the built frontend directly from FastAPI. Bootstrap uses a
+persistent, versioned checkpoint and `/v1/health` rejects partial index artifacts. No public URL
+is kept running between test sessions — see `DEPLOYMENT.md` for the exact pre-flight checklist.
 
 <p align="center">
   <img src="https://capsule-render.vercel.app/api?type=waving&color=0:f59e0b,50:7c4a0e,100:1a0e0a&height=110&section=footer" />

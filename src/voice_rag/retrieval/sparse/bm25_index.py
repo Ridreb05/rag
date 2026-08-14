@@ -30,8 +30,31 @@ class Bm25Index:
         self._index = tantivy.Index(self.schema, path=str(self.index_dir))
 
     def build(self, chunk_ids: list[str], texts: list[str]) -> None:
+        """Index a complete corpus, replacing any matching chunk IDs.
+
+        ``build`` used to be append-only.  That was harmless for a one-shot
+        batch job, but made an interrupted bootstrap unsafe to resume because
+        replayed batches produced duplicate BM25 documents.  Keep the public
+        method, but give it the same idempotent semantics as the Qdrant
+        upsert path.
+        """
+        self.upsert_batch(chunk_ids, texts)
+
+    def upsert_batch(self, chunk_ids: list[str], texts: list[str]) -> None:
+        """Atomically replace a small batch of documents and make it searchable.
+
+        The ``raw`` tokenizer on ``chunk_id`` makes deletion an exact key
+        lookup.  We commit once per batch so an index build can checkpoint
+        after this call: if the process stops, replaying the last batch is
+        correct and cannot create duplicate results.
+        """
+        if len(chunk_ids) != len(texts):
+            raise ValueError("chunk_ids and texts must have the same length")
+        if not chunk_ids:
+            return
         writer = self._index.writer()
         for cid, text in zip(chunk_ids, texts, strict=True):
+            writer.delete_documents_by_term("chunk_id", cid)
             writer.add_document(tantivy.Document(chunk_id=cid, text=text))
         writer.commit()
         self._index.reload()
