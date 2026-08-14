@@ -393,7 +393,12 @@ def export_index(token: str) -> FileResponse:
     snapshot = services.qdrant_client.create_snapshot(collection_name=services.collection)
     snapshot_name = snapshot.name
 
-    tmp_dir = Path(tempfile.mkdtemp(prefix="index_export_"))
+    # tempfile's default dir (system /tmp) sits on the small container disk,
+    # not the persistent volume — a multi-GB snapshot exhausts it immediately.
+    # data/full_index (via the /app/data symlink) resolves onto the volume.
+    export_root = INDEX_STATE_PATH.parent / "exports"
+    export_root.mkdir(parents=True, exist_ok=True)
+    tmp_dir = Path(tempfile.mkdtemp(prefix="index_export_", dir=str(export_root)))
     try:
         snapshot_path = tmp_dir / snapshot_name
         with httpx.stream(
