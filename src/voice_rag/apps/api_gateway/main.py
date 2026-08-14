@@ -18,6 +18,7 @@ import os
 import shutil
 import tarfile
 import tempfile
+import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
@@ -379,54 +380,88 @@ def voice_query(
     return VoiceQueryResponse(transcript=stt_result.transcript, **base.model_dump())
 
 
-@app.get("/v1/admin/export-index")
-def export_index(token: str) -> FileResponse:
-    """One-off operational export: bundle the completed Qdrant snapshot, BM25
-    index, and state manifest into one downloadable archive. This exists
-    because the deployment image has no SSH server, so this is the only way
-    to pull the built index off an ephemeral Pod."""
+_export_state: dict = {"status": "idle", "archive_path": None, "tmp_dir": None, "error": None}
+_export_lock = threading.Lock()
+
+
+def _check_export_token(token: str) -> None:
     expected_token = os.environ.get("VOICE_RAG_EXPORT_TOKEN")
     if not expected_token or token != expected_token:
         raise HTTPException(status_code=403, detail="invalid or unconfigured export token")
 
-    qdrant_base = QDRANT_URL or "http://127.0.0.1:6333"
-    # services.qdrant_client keeps the SDK default ~5s timeout, which is
-    # correct for the hot query path but far too short for creating a
-    # snapshot across every segment of a 964K-point collection (minutes,
-    # not seconds). Call the REST endpoint directly with a real budget.
-    create_resp = httpx.post(f"{qdrant_base}/collections/{services.collection}/snapshots", timeout=1800.0)
-    create_resp.raise_for_status()
-    snapshot_name = create_resp.json()["result"]["name"]
 
-    # tempfile's default dir (system /tmp) sits on the small container disk,
-    # not the persistent volume — a multi-GB snapshot exhausts it immediately.
-    # data/full_index (via the /app/data symlink) resolves onto the volume.
-    export_root = INDEX_STATE_PATH.parent / "exports"
-    export_root.mkdir(parents=True, exist_ok=True)
-    tmp_dir = Path(tempfile.mkdtemp(prefix="index_export_", dir=str(export_root)))
+def _run_export(qdrant_base: str, collection: str) -> None:
+    """Runs in a background thread so no single HTTP request stays open for
+    the many minutes this legitimately takes — a proxy/browser timeout on
+    one long blocking request was cutting the export off mid-way."""
     try:
+        create_resp = httpx.post(f"{qdrant_base}/collections/{collection}/snapshots", timeout=1800.0)
+        create_resp.raise_for_status()
+        snapshot_name = create_resp.json()["result"]["name"]
+
+        # tempfile's default dir (system /tmp) sits on the small container
+        # disk, not the persistent volume. data/full_index resolves onto
+        # the volume via the existing /app/data symlink.
+        export_root = INDEX_STATE_PATH.parent / "exports"
+        export_root.mkdir(parents=True, exist_ok=True)
+        tmp_dir = Path(tempfile.mkdtemp(prefix="index_export_", dir=str(export_root)))
+        _export_state["tmp_dir"] = str(tmp_dir)
+
         snapshot_path = tmp_dir / snapshot_name
         with httpx.stream(
             "GET",
-            f"{qdrant_base}/collections/{services.collection}/snapshots/{snapshot_name}",
-            timeout=600.0,
+            f"{qdrant_base}/collections/{collection}/snapshots/{snapshot_name}",
+            timeout=1800.0,
         ) as resp:
             resp.raise_for_status()
             with snapshot_path.open("wb") as f:
                 for chunk in resp.iter_bytes():
                     f.write(chunk)
 
-        archive_path = tmp_dir / f"{services.collection}_export.tar.gz"
+        archive_path = tmp_dir / f"{collection}_export.tar.gz"
         with tarfile.open(archive_path, "w:gz") as tar:
             tar.add(snapshot_path, arcname=snapshot_name)
             if Path(BM25_PATH).exists():
                 tar.add(BM25_PATH, arcname="bm25")
             if INDEX_STATE_PATH.exists():
                 tar.add(INDEX_STATE_PATH, arcname="state.json")
-    except Exception:
-        shutil.rmtree(tmp_dir, ignore_errors=True)
-        raise
 
+        _export_state["archive_path"] = str(archive_path)
+        _export_state["status"] = "done"
+    except Exception as exc:
+        logger.exception("Index export failed")
+        _export_state["error"] = str(exc)
+        _export_state["status"] = "error"
+
+
+@app.post("/v1/admin/export-index/start")
+def export_index_start(token: str) -> dict:
+    """Kick off the export in the background and return immediately."""
+    _check_export_token(token)
+    with _export_lock:
+        if _export_state["status"] == "running":
+            return {"status": "running"}
+        _export_state.update({"status": "running", "archive_path": None, "tmp_dir": None, "error": None})
+        qdrant_base = QDRANT_URL or "http://127.0.0.1:6333"
+        threading.Thread(target=_run_export, args=(qdrant_base, services.collection), daemon=True).start()
+    return {"status": "running"}
+
+
+@app.get("/v1/admin/export-index/status")
+def export_index_status(token: str) -> dict:
+    _check_export_token(token)
+    return {"status": _export_state["status"], "error": _export_state["error"]}
+
+
+@app.get("/v1/admin/export-index/download")
+def export_index_download(token: str) -> FileResponse:
+    """Only serves an already-finished archive — a fast, static file
+    transfer, not something that waits on server-side work."""
+    _check_export_token(token)
+    if _export_state["status"] != "done" or not _export_state["archive_path"]:
+        raise HTTPException(status_code=409, detail=f"export not ready (status={_export_state['status']!r})")
+    archive_path = Path(_export_state["archive_path"])
+    tmp_dir = Path(_export_state["tmp_dir"])
     return FileResponse(
         archive_path,
         filename=archive_path.name,
