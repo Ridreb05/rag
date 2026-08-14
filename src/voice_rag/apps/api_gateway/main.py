@@ -15,16 +15,22 @@ from __future__ import annotations
 import json
 import logging
 import os
+import shutil
+import tarfile
+import tempfile
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 
+import httpx
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
+from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 from qdrant_client import models as qdrant_models
+from starlette.background import BackgroundTask
 
 from voice_rag.apps.api_gateway.rate_limit import RateLimitMiddleware
 from voice_rag.embeddings.service import EmbeddingService
@@ -371,6 +377,52 @@ def voice_query(
         initial_timings={"stt_ms": (time.perf_counter() - stt_started_at) * 1000},
     )
     return VoiceQueryResponse(transcript=stt_result.transcript, **base.model_dump())
+
+
+@app.get("/v1/admin/export-index")
+def export_index(token: str) -> FileResponse:
+    """One-off operational export: bundle the completed Qdrant snapshot, BM25
+    index, and state manifest into one downloadable archive. This exists
+    because the deployment image has no SSH server, so this is the only way
+    to pull the built index off an ephemeral Pod."""
+    expected_token = os.environ.get("VOICE_RAG_EXPORT_TOKEN")
+    if not expected_token or token != expected_token:
+        raise HTTPException(status_code=403, detail="invalid or unconfigured export token")
+
+    qdrant_base = QDRANT_URL or "http://127.0.0.1:6333"
+    snapshot = services.qdrant_client.create_snapshot(collection_name=services.collection)
+    snapshot_name = snapshot.name
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix="index_export_"))
+    try:
+        snapshot_path = tmp_dir / snapshot_name
+        with httpx.stream(
+            "GET",
+            f"{qdrant_base}/collections/{services.collection}/snapshots/{snapshot_name}",
+            timeout=600.0,
+        ) as resp:
+            resp.raise_for_status()
+            with snapshot_path.open("wb") as f:
+                for chunk in resp.iter_bytes():
+                    f.write(chunk)
+
+        archive_path = tmp_dir / f"{services.collection}_export.tar.gz"
+        with tarfile.open(archive_path, "w:gz") as tar:
+            tar.add(snapshot_path, arcname=snapshot_name)
+            if Path(BM25_PATH).exists():
+                tar.add(BM25_PATH, arcname="bm25")
+            if INDEX_STATE_PATH.exists():
+                tar.add(INDEX_STATE_PATH, arcname="state.json")
+    except Exception:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+        raise
+
+    return FileResponse(
+        archive_path,
+        filename=archive_path.name,
+        media_type="application/gzip",
+        background=BackgroundTask(shutil.rmtree, tmp_dir, ignore_errors=True),
+    )
 
 
 @app.get("/v1/health")
