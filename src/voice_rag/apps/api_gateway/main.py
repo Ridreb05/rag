@@ -25,7 +25,6 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-import httpx
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -390,14 +389,18 @@ def _check_export_token(token: str) -> None:
         raise HTTPException(status_code=403, detail="invalid or unconfigured export token")
 
 
-def _run_export(qdrant_base: str, collection: str) -> None:
+def _run_export(collection: str) -> None:
     """Runs in a background thread so no single HTTP request stays open for
-    the many minutes this legitimately takes — a proxy/browser timeout on
-    one long blocking request was cutting the export off mid-way."""
+    the many minutes this legitimately takes. Copies Qdrant's on-disk
+    collection directory straight from disk rather than going through
+    Qdrant's snapshot+checksum API, which hung indefinitely on a collection
+    this size. Safe because the collection is serve-only at this point —
+    nothing is writing to those files concurrently."""
     try:
-        create_resp = httpx.post(f"{qdrant_base}/collections/{collection}/snapshots", timeout=1800.0)
-        create_resp.raise_for_status()
-        snapshot_name = create_resp.json()["result"]["name"]
+        qdrant_storage_path = Path(os.environ.get("QDRANT__STORAGE__STORAGE_PATH", QDRANT_PATH))
+        collection_dir = qdrant_storage_path / "collections" / collection
+        if not collection_dir.exists():
+            raise RuntimeError(f"Qdrant collection directory not found: {collection_dir}")
 
         # tempfile's default dir (system /tmp) sits on the small container
         # disk, not the persistent volume. data/full_index resolves onto
@@ -407,20 +410,9 @@ def _run_export(qdrant_base: str, collection: str) -> None:
         tmp_dir = Path(tempfile.mkdtemp(prefix="index_export_", dir=str(export_root)))
         _export_state["tmp_dir"] = str(tmp_dir)
 
-        snapshot_path = tmp_dir / snapshot_name
-        with httpx.stream(
-            "GET",
-            f"{qdrant_base}/collections/{collection}/snapshots/{snapshot_name}",
-            timeout=1800.0,
-        ) as resp:
-            resp.raise_for_status()
-            with snapshot_path.open("wb") as f:
-                for chunk in resp.iter_bytes():
-                    f.write(chunk)
-
         archive_path = tmp_dir / f"{collection}_export.tar.gz"
         with tarfile.open(archive_path, "w:gz") as tar:
-            tar.add(snapshot_path, arcname=snapshot_name)
+            tar.add(collection_dir, arcname="qdrant_collection")
             if Path(BM25_PATH).exists():
                 tar.add(BM25_PATH, arcname="bm25")
             if INDEX_STATE_PATH.exists():
@@ -442,8 +434,7 @@ def export_index_start(token: str) -> dict:
         if _export_state["status"] == "running":
             return {"status": "running"}
         _export_state.update({"status": "running", "archive_path": None, "tmp_dir": None, "error": None})
-        qdrant_base = QDRANT_URL or "http://127.0.0.1:6333"
-        threading.Thread(target=_run_export, args=(qdrant_base, services.collection), daemon=True).start()
+        threading.Thread(target=_run_export, args=(services.collection,), daemon=True).start()
     return {"status": "running"}
 
 
