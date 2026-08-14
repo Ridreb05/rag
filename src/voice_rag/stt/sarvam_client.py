@@ -28,7 +28,7 @@ from voice_rag.settings import settings
 logger = logging.getLogger(__name__)
 
 BASE_URL = "https://api.sarvam.ai"
-STT_MODEL = "saaras:v3"
+STT_MODEL = "saarika:v2.5"
 TTS_MODEL = "bulbul:v3"
 
 
