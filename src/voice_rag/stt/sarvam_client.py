@@ -85,6 +85,8 @@ class SarvamSttClient:
             logger.error("Sarvam STT rejected the request: %s %s", resp.status_code, resp.text)
             raise httpx.HTTPStatusError(f"{exc}: {resp.text}", request=exc.request, response=exc.response) from exc
         data = resp.json()
+        if not data.get("transcript", "").strip():
+            logger.warning("Sarvam STT returned an empty transcript. Full response: %s", data)
         return SttResult(request_id=data["request_id"], transcript=data["transcript"], language_code=data.get("language_code"))
 
     def transcribe_file(self, path: str, model: str = STT_MODEL, mode: str = "transcribe") -> SttResult:
