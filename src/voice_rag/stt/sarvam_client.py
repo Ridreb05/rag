@@ -64,14 +64,22 @@ class SarvamSttClient:
         model: str = STT_MODEL,
         mode: str = "transcribe",
         content_type: str = "audio/wav",
+        language_code: str | None = None,
     ) -> SttResult:
+        form_data = {"model": model, "mode": mode}
+        if language_code:
+            form_data["language_code"] = language_code
         resp = self._client.post(
             f"{BASE_URL}/speech-to-text",
             headers={"api-subscription-key": self.api_key},
-            data={"model": model, "mode": mode},
+            data=form_data,
             files={"file": (filename, audio_bytes, content_type)},
         )
-        resp.raise_for_status()
+        try:
+            resp.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            logger.error("Sarvam STT rejected the request: %s %s", resp.status_code, resp.text)
+            raise httpx.HTTPStatusError(f"{exc}: {resp.text}", request=exc.request, response=exc.response) from exc
         data = resp.json()
         return SttResult(request_id=data["request_id"], transcript=data["transcript"], language_code=data.get("language_code"))
 

@@ -70,6 +70,12 @@ GENERATION_BACKEND = os.environ.get("VOICE_RAG_GENERATION_BACKEND", "gemini")
 TOP_K_PER_SIGNAL = 8
 RERANK_CANDIDATES = 8
 MAX_AUDIO_BYTES = 15 * 1024 * 1024
+# Sarvam's BCP-47 codes; "or" -> "od-IN" is the one exception to the naive <code>-IN pattern.
+SARVAM_BCP47 = {
+    "as": "as-IN", "bn": "bn-IN", "gu": "gu-IN", "hi": "hi-IN", "kn": "kn-IN",
+    "ml": "ml-IN", "mr": "mr-IN", "ne": "ne-IN", "or": "od-IN", "pa": "pa-IN",
+    "sa": "sa-IN", "ta": "ta-IN", "te": "te-IN", "ur": "ur-IN",
+}
 
 # Dense/sparse (2 network round trips to Qdrant) and BM25 (local, embedded)
 # are independent given the query embedding — run them concurrently instead
@@ -352,6 +358,7 @@ def voice_query(
         audio_bytes,
         filename=audio.filename or "audio.webm",
         content_type=audio.content_type or "audio/wav",
+        language_code=SARVAM_BCP47.get(language),
     )
     if not stt_result.transcript.strip():
         raise HTTPException(status_code=400, detail="speech-to-text returned an empty transcript")
