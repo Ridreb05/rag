@@ -69,11 +69,15 @@ class SarvamSttClient:
         form_data = {"model": model, "mode": mode}
         if language_code:
             form_data["language_code"] = language_code
+        # Sarvam allowlists exact MIME types (e.g. "audio/webm") and rejects
+        # codec parameters like "audio/webm;codecs=opus" that
+        # MediaRecorder.mimeType sends by default in browsers.
+        bare_content_type = content_type.split(";", 1)[0].strip()
         resp = self._client.post(
             f"{BASE_URL}/speech-to-text",
             headers={"api-subscription-key": self.api_key},
             data=form_data,
-            files={"file": (filename, audio_bytes, content_type)},
+            files={"file": (filename, audio_bytes, bare_content_type)},
         )
         try:
             resp.raise_for_status()
