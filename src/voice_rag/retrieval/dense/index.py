@@ -34,10 +34,10 @@ def collection_name(language: str, index_version: str) -> str:
     return f"chunks_{language}_v{index_version}"
 
 
-def get_client(path: str | None = "data/qdrant_local", url: str | None = None) -> QdrantClient:
+def get_client(path: str | None = "data/qdrant_local", url: str | None = None, *, timeout: float | None = None) -> QdrantClient:
     if url:
-        return QdrantClient(url=url)
-    return QdrantClient(path=path)
+        return QdrantClient(url=url, timeout=timeout)
+    return QdrantClient(path=path, timeout=timeout)
 
 
 def ensure_collection(

@@ -424,7 +424,12 @@ def main(argv: list[str] | None = None) -> None:
     state, state_existed = _load_or_create_state(state_path, identity, resume=args.resume)
 
     qdrant_path = str(INDEX_DIR / "qdrant")
-    client = get_client(path=None if args.qdrant_url else qdrant_path, url=args.qdrant_url)
+    # The default client timeout (~5s) is shorter than a large wait=true bulk
+    # upsert can legitimately take once segments are sizable; a client-side
+    # timeout here does not stop the write, it just abandons the process
+    # mid-flight and can leave Qdrant's on-disk segments inconsistent if the
+    # process is then killed. Give bulk indexing a much longer budget.
+    client = get_client(path=None if args.qdrant_url else qdrant_path, url=args.qdrant_url, timeout=120.0)
     collection = collection_name(args.language, args.index_version)
     collection_existed = client.collection_exists(collection)
     if not state_existed and collection_existed and not args.reset:
