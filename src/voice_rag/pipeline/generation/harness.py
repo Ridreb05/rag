@@ -93,7 +93,26 @@ class GenerationHarness:
             retrieval_confidence=retrieval_confidence,
             mode="generative",
         )
-        generated = self.generator.generate(req)
+        try:
+            generated = self.generator.generate(req)
+        except Exception as exc:
+            # Generation is the only remote dependency left on the answer path,
+            # so it is the only stage that can fail for reasons outside this
+            # system: provider outage, rate limiting, or the generator's own
+            # wall-clock budget expiring. None of those should surface as a
+            # 500 — retrieval already succeeded, and its top reranked passage
+            # is a grounded, citable answer on its own. Degrade to that rather
+            # than failing the request, and flag it so the downgrade is
+            # visible rather than silent.
+            logger.warning("generation_failed trace_id=%s error=%s", trace_id, exc)
+            if not candidates:
+                resp = _refused(trace_id, self.generator.model)
+                resp.guardrail_flags = ["generation_unavailable"]
+                return resp
+            resp = _extractive_answer(trace_id, candidates, self.generator.model)
+            resp.guardrail_flags = ["generation_unavailable_extractive_fallback"]
+            return resp
+
         if generated is None:
             # Gemini's own safety classifiers declined — surface as a guardrail
             # outcome, not a crash.

@@ -84,9 +84,10 @@ class GeminiGenerationService:
         self,
         api_key: str | None = None,
         model: str = MODEL,
-        timeout: float = 30.0,
-        max_retries: int = 3,
+        timeout: float = 15.0,
+        max_retries: int = 2,
         backoff_base_seconds: float = 0.5,
+        total_budget_seconds: float = 8.0,
     ):
         key = api_key or settings.gemini_api_key
         if not key:
@@ -95,6 +96,7 @@ class GeminiGenerationService:
         self.model = model
         self.max_retries = max_retries
         self.backoff_base_seconds = backoff_base_seconds
+        self.total_budget_seconds = total_budget_seconds
         # Header, not `?key=` query param — see the module-level comment on
         # why: query params land in logs/proxies/browser history in a way
         # a header does not.
@@ -106,13 +108,30 @@ class GeminiGenerationService:
         malformed request) fail immediately since retrying won't help.
         This is the harness's error-recovery layer (task requirement:
         'retries, ... error recovery') — raw REST calls to Gemini need this
-        implemented explicitly, unlike an SDK with built-in retries."""
+        implemented explicitly, unlike an SDK with built-in retries.
+
+        Retries are bounded by an overall wall-clock budget, not just by an
+        attempt count. Per-attempt timeouts multiplied by retries define the
+        real worst case, and the previous defaults (30s timeout x 4 attempts
+        plus backoff) allowed a single query to occupy ~123 seconds — an
+        unbounded tail in a pipeline whose whole point is a sub-second budget.
+        The deadline makes the worst case deterministic: no attempt is started
+        that cannot finish inside the remaining budget, and the per-request
+        timeout is clamped to whatever time is actually left. Measured
+        generation is ~2.1s p50 / ~3.2s max, so the default budget leaves
+        healthy headroom and only truncates genuinely pathological calls.
+        """
+        deadline = time.monotonic() + self.total_budget_seconds
         last_exc: Exception | None = None
         for attempt in range(self.max_retries + 1):
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                break
             try:
                 resp = self._client.post(
                     f"{BASE_URL}/models/{self.model}:generateContent",
                     json=payload,
+                    timeout=min(self._client.timeout.read or remaining, remaining),
                 )
                 if resp.status_code == 429 or resp.status_code >= 500:
                     raise httpx.HTTPStatusError(
@@ -128,6 +147,10 @@ class GeminiGenerationService:
                 if not is_retryable or attempt == self.max_retries:
                     raise
                 delay = self.backoff_base_seconds * (2**attempt)
+                # Don't sleep into the deadline just to start an attempt that
+                # has no time left to run.
+                if time.monotonic() + delay >= deadline:
+                    raise
                 logger.warning(
                     "Gemini call failed for trace_id=%s (attempt %d/%d): %s — retrying in %.1fs",
                     trace_id,
@@ -139,7 +162,9 @@ class GeminiGenerationService:
                 time.sleep(delay)
         if last_exc is not None:
             raise last_exc
-        raise RuntimeError("unreachable: retry loop exited without a response or exception")
+        raise TimeoutError(
+            f"Gemini generation exceeded its {self.total_budget_seconds}s budget for trace_id={trace_id}"
+        )
 
     def generate(self, request: GenerationRequest, max_tokens: int = 2048) -> GeneratedAnswer | None:
         context_text, marker_to_chunk_id = build_context_block(request)

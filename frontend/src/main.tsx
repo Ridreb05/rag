@@ -27,11 +27,9 @@ import { ApiError, submitText, submitVoice } from "./api";
 import type { HealthResponse, HistoryItem, Result } from "./types";
 import { Background } from "./components/Background";
 import { Header } from "./components/Header";
-import { Hero } from "./components/Hero";
 import { QueryConsole } from "./components/QueryConsole";
 import { LoadingCard } from "./components/LoadingCard";
 import { ResultCard } from "./components/ResultCard";
-import { ChallengeSection } from "./components/ChallengeSection";
 import { SystemSection } from "./components/SystemSection";
 import { Footer } from "./components/Footer";
 import { ToastLayer } from "./components/ToastLayer";
@@ -156,8 +154,6 @@ function App() {
       <Header health={health} />
 
       <main id="top">
-        <Hero />
-
         <QueryConsole
           query={query}
           setQuery={setQuery}
@@ -173,8 +169,6 @@ function App() {
           {pending && <LoadingCard voice={voiceMutation.isPending} />}
           {result && !pending && <ResultCard result={result} />}
         </AnimatePresence>
-
-        <ChallengeSection />
 
         <SystemSection
           health={health}

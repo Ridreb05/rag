@@ -35,12 +35,12 @@ from starlette.background import BackgroundTask
 from voice_rag.api.rate_limit import RateLimitMiddleware
 from voice_rag.pipeline.embeddings.service import EmbeddingService
 from voice_rag.pipeline.generation.gemini_service import GeminiGenerationService
-from voice_rag.pipeline.generation.harness import GenerationHarness
+from voice_rag.pipeline.generation.harness import EXTRACTIVE_CONFIDENCE_THRESHOLD, GenerationHarness
 from voice_rag.pipeline.generation.schemas import RetrievalCandidate
 from voice_rag.pipeline.guardrails.grounding import GroundingValidator
 from voice_rag.pipeline.guardrails.off_topic import OffTopicGate, compute_corpus_centroid
 from voice_rag.pipeline.reranking.service import RerankerService
-from voice_rag.pipeline.retrieval.dense.index import collection_name, get_client
+from voice_rag.pipeline.retrieval.dense.index import collection_name, get_client, stable_point_id
 from voice_rag.pipeline.retrieval.fusion.rrf import reciprocal_rank_fusion
 from voice_rag.pipeline.retrieval.sparse.bm25_index import Bm25Index
 from voice_rag.pipeline.stt.sarvam_client import SarvamSttClient
@@ -281,17 +281,80 @@ def _answer_query(
     fused_chunk_ids = [cid for cid, _ in fused][:RERANK_CANDIDATES]
     timings["fusion_ms"] = (time.perf_counter() - t0) * 1000
 
+    # Recover chunks that only BM25 found. The BM25 index stores chunk ids but
+    # not text, so without this step any candidate the vector searches missed
+    # is silently dropped before reranking — which would make BM25 able to
+    # *reorder* results but never to *contribute* one, defeating the reason a
+    # lexical signal is in the hybrid at all (exact ids, numbers, proper nouns
+    # that embeddings under-weight). Qdrant point ids are a pure function of
+    # chunk_id (retrieval/dense/index.py), so these are primary-key fetches,
+    # not a filtered scan, and the call only happens when BM25 actually
+    # contributed something unique to the top-K.
+    # The fetch is dispatched now but deliberately *not* awaited here: it is
+    # network/disk-bound (~22ms against an on-disk payload store) while the
+    # reranker below is GPU-bound, so the two overlap and the recovery is
+    # effectively free. The recovered chunks are then scored in a small second
+    # reranker batch — exact, not an approximation, because cross-encoder
+    # scores are per-(query, passage) independent: verified that splitting a
+    # batch reproduces single-batch scores to max |diff| 0.0 with identical
+    # ordering.
+    missing_chunk_ids = [cid for cid in fused_chunk_ids if cid not in payload_by_chunk_id]
+    recovery_future = None
+    if missing_chunk_ids:
+        recovery_future = _retrieval_executor.submit(
+            services.qdrant_client.retrieve,
+            collection_name=services.collection,
+            ids=[stable_point_id(cid) for cid in missing_chunk_ids],
+            with_payload=True,
+        )
+
     rerank_score_by_chunk_id: dict[str, float] = {}
     if not fused_chunk_ids:
         resp = services.harness.answer(trace_id, query_text, language, [])
     else:
         t0 = time.perf_counter()
-        texts = [payload_by_chunk_id[cid]["text"] for cid in fused_chunk_ids if cid in payload_by_chunk_id]
-        valid_chunk_ids = [cid for cid in fused_chunk_ids if cid in payload_by_chunk_id]
-        scores = services.reranker.rerank(query_text, texts)
+        known_ids = [cid for cid in fused_chunk_ids if cid in payload_by_chunk_id]
+        known_texts = [payload_by_chunk_id[cid]["text"] for cid in known_ids]
+        scored: list[tuple[str, str, float]] = (
+            list(zip(known_ids, known_texts, services.reranker.rerank(query_text, known_texts), strict=True))
+            if known_texts
+            else []
+        )
+
+        # Adaptive gate: only pay for BM25's extra candidates when they could
+        # actually change the outcome. Reranking is almost perfectly linear in
+        # candidate count (measured: ~4.8ms each, ~0 fixed cost), so scoring
+        # the recovered chunks is not free. If the vector searches already
+        # produced a decisively confident passage the harness would answer
+        # extractively from, a BM25-only chunk would have to beat an already
+        # -confident answer to matter — rare, and low value when it happens.
+        # Below that bar is exactly where a lexical exact-match is most likely
+        # to be the right answer, so that is where the work gets spent.
+        already_decisive = bool(scored) and max(s for _, _, s in scored) >= EXTRACTIVE_CONFIDENCE_THRESHOLD
+        if recovery_future is not None and not already_decisive:
+            try:
+                for point in recovery_future.result():
+                    if point.payload and "chunk_id" in point.payload:
+                        payload_by_chunk_id[point.payload["chunk_id"]] = point.payload
+                recovered_ids = [cid for cid in missing_chunk_ids if cid in payload_by_chunk_id]
+                recovered_texts = [payload_by_chunk_id[cid]["text"] for cid in recovered_ids]
+                if recovered_texts:
+                    scored += list(
+                        zip(
+                            recovered_ids,
+                            recovered_texts,
+                            services.reranker.rerank(query_text, recovered_texts),
+                            strict=True,
+                        )
+                    )
+                timings["bm25_recovered"] = float(len(recovered_ids))
+            except Exception as exc:
+                # Never fail a request over an enrichment step — worst case we
+                # fall back to the previous behaviour of dropping these.
+                logger.warning("bm25_payload_recovery_failed trace_id=%s error=%s", trace_id, exc)
         timings["rerank_ms"] = (time.perf_counter() - t0) * 1000
 
-        ranked = sorted(zip(valid_chunk_ids, texts, scores, strict=True), key=lambda x: x[2], reverse=True)
+        ranked = sorted(scored, key=lambda x: x[2], reverse=True)
         candidates = [
             RetrievalCandidate(
                 chunk_id=cid,

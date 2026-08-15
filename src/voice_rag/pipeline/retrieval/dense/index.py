@@ -182,11 +182,23 @@ def upsert_chunks(client: QdrantClient, collection: str, chunks: list[IndexedChu
     return total
 
 
-def _stable_point_id(chunk_id: str) -> int:
+def stable_point_id(chunk_id: str) -> int:
     """Qdrant point IDs must be int or UUID; derive a stable 63-bit int from
     the chunk_id so re-upserting the same chunk (e.g. re-running ingestion)
-    overwrites rather than duplicates."""
+    overwrites rather than duplicates.
+
+    Being a pure function of ``chunk_id`` also makes it a client-side primary
+    key: any component holding a chunk_id (notably BM25, whose index stores
+    ids but not text) can compute the exact Qdrant point id with no lookup and
+    fetch that chunk's payload directly. See the BM25 recovery step in
+    api/main.py.
+    """
     import hashlib
 
     h = hashlib.sha256(chunk_id.encode("utf-8")).digest()
     return int.from_bytes(h[:8], "big") & 0x7FFFFFFFFFFFFFFF
+
+
+# Backwards-compatible private alias (this was private before it had an
+# external caller).
+_stable_point_id = stable_point_id

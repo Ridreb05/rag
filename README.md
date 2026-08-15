@@ -135,7 +135,7 @@ but all 150 are reported, including the slow ones, not a best-case sample).
 
 | | P50 | P70 | P95 | P99 | P100 |
 |---|---|---|---|---|---|
-| **ms** | 64.3 | 71.9 | 88.8 | 134.9 | 535.9 |
+| **ms** | 76.5 | 85.0 | 105.7 | 154.2 | 623.3 |
 
 Comfortably under the 200ms target through P99; P100 is a single outlier (a slow BM25 call, per
 the per-stage breakdown in `reports/latency_benchmark/hi_full1.md`).
@@ -144,9 +144,9 @@ the per-stage breakdown in `reports/latency_benchmark/hi_full1.md`).
 
 | | P50 | P70 | P95 | P99 | P100 |
 |---|---|---|---|---|---|
-| **ms** | 76.6 | 129.9 | 2550.7 | 3418.5 | 5402.7 |
+| **ms** | 77.3 | 124.6 | 2734.1 | 3799.1 | 4257.6 |
 
-Mode mix over those 150 queries: 96 extractive, 39 refused, 15 generative. Against the real,
+Mode mix over those 150 queries: 96 extractive, 38 refused, 16 generative. Against the real,
 comprehensive index, most queries retrieve a confident-enough top match to skip the LLM entirely
 — **P50 and P70 end-to-end are both under the 200ms target on real production data.** Only the
 tail (P95 and beyond, driven by the ~10% of queries that route to a real Gemini call) exceeds it
@@ -157,9 +157,10 @@ not an implementation gap.
 
 ### How the hot path was optimized
 
-The numbers above are ~25% faster at P50 than the first honest measurement of this pipeline
-(retrieval 85.6ms → 64.3ms, end-to-end 95.6ms → 76.6ms). Every change was driven by per-stage
-profiling rather than intuition, and each was verified to leave results unchanged:
+Retrieval P50 went 85.6ms → 76.5ms and end-to-end P50 95.6ms → 77.3ms **while the hybrid
+retrieval got strictly more correct** — the pipeline is now faster than it started *and* using a
+third retrieval signal that was previously being discarded (below). Every change was driven by
+per-stage profiling rather than intuition, and each was verified to leave results unchanged:
 
 - **Embedding: 29.4ms → 12.8ms.** `FlagEmbedding.encode()` is built for batch throughput and
   charges a single query for work it cannot use: it re-runs `model.to(device)` and `.eval()`
@@ -178,13 +179,61 @@ profiling rather than intuition, and each was verified to leave results unchange
   yet it used to start *after* the encoder. It now runs concurrently with the GPU embedding call,
   so its cost is absorbed rather than added.
 
-Two changes were measured and deliberately **not** made. Reducing the reranker's `max_length` does
-nothing (dynamic padding means sequences are already short) and SDPA attention is already the
-default, so the remaining ~34ms of reranking is genuinely compute-bound for a 568M cross-encoder
-on this GPU. Dropping high-document-frequency Hindi function words from BM25 queries is
-substantially faster (14.6ms → 8.4ms) but changes the top BM25 result on 20% of queries — a real
-ranking regression bought for ~1.4ms at P50, since embedding, not BM25, is now the bottleneck of
-that concurrent phase. It was rejected on that evidence.
+Several changes were measured and deliberately **not** made. Reducing the reranker's `max_length`
+does nothing (dynamic padding means sequences are already short) and SDPA attention is already the
+default, so reranking is genuinely compute-bound for a 568M cross-encoder — measured at ~4.8ms per
+candidate with essentially *zero* fixed cost, which is why the fix below is about scoring fewer
+candidates rather than scoring them faster. Dropping high-document-frequency Hindi function words
+from BM25 queries is substantially faster (14.6ms → 8.4ms) but changes the top BM25 result on 20%
+of queries — a real ranking regression bought for ~1.4ms at P50, since embedding, not BM25, is the
+bottleneck of that concurrent phase. Lowering Gemini's `maxOutputTokens` from 2048 looked like an
+easy win until measurement showed answers already use only 198 tokens at the median (341 max), so
+lowering it would only truncate the longest answers and break JSON-schema parsing. All rejected on
+evidence.
+
+### The hybrid was only using two of its three signals
+
+Profiling surfaced a correctness bug worth more than any latency tuning. The BM25 index stores
+chunk ids but not chunk text, and passages were only ever collected from the dense and sparse
+Qdrant hits — so **any candidate that only BM25 found was silently dropped before reranking.**
+BM25 could reorder results it already agreed on, but could never *contribute* one, defeating the
+entire reason a lexical signal is in a hybrid design (exact ids, numbers, and proper nouns that
+embeddings under-weight).
+
+Measured over 150 real corpus queries: **93% of queries were discarding BM25-only candidates (250
+in total), and in 9 of them the discarded chunk was the best available answer.**
+
+The fix uses a property already latent in the design: Qdrant point ids are a pure SHA-256 function
+of `chunk_id`, so a chunk id from BM25 is a *client-computable primary key* — those payloads are
+fetched by id, with no payload index and no filtered scan. Three refinements keep it cheap:
+
+- The fetch is dispatched **before** reranking so the disk-bound Qdrant read overlaps the
+  GPU-bound cross-encoder instead of queueing behind it.
+- Recovered chunks are scored in a **second small reranker batch**, which is exact rather than an
+  approximation: cross-encoder scores are per-(query, passage) independent, verified by
+  reproducing single-batch scores to max |diff| 0.0 with identical ordering.
+- An **adaptive gate** skips the whole step when the vector searches already produced a passage
+  above the extractive-confidence threshold. A BM25-only chunk would have to beat an
+  already-decisive answer to matter; below that bar is exactly where a lexical exact match is most
+  likely to *be* the answer, so that is where the extra ~4.8ms/candidate gets spent. This cut the
+  feature's cost from +24ms to +12ms at P50.
+
+### Bounding the one unbounded thing
+
+Generation is the only remote dependency left on the answer path, and it had two production
+hazards that a latency target makes serious:
+
+- **Retries were bounded by attempt count, not wall-clock.** With a 30s per-request timeout and 3
+  retries plus backoff, a single query could occupy ~123 seconds inside a pipeline built around a
+  sub-second budget. Retries now run against an overall deadline: no attempt starts that cannot
+  finish in the remaining budget, per-request timeouts clamp to the time left, and backoff will
+  not sleep past the deadline. Worst case is now deterministic (8s default, against a measured
+  2.1s median / 3.2s max real generation).
+- **A generation failure returned HTTP 500.** A provider outage, rate limit, or expired budget
+  took the whole request down even though retrieval had already succeeded. It now degrades to the
+  top reranked passage — already grounded and citable — flagged
+  `generation_unavailable_extractive_fallback` so the downgrade is visible rather than silent.
+  Both paths are covered by regression tests in `tests/test_harness.py`.
 
 **A real bug was found and fixed while producing this evidence.** The first attempt at this
 exact benchmark run came back with 100% of end-to-end queries refused — `qdrant-client==1.19.0`

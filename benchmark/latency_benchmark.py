@@ -39,11 +39,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from voice_rag.pipeline.embeddings.service import EmbeddingService
 from voice_rag.pipeline.generation.gemini_service import GeminiGenerationService
-from voice_rag.pipeline.generation.harness import GenerationHarness
+from voice_rag.pipeline.generation.harness import EXTRACTIVE_CONFIDENCE_THRESHOLD, GenerationHarness
 from voice_rag.pipeline.generation.schemas import RetrievalCandidate
 from voice_rag.pipeline.guardrails.off_topic import OffTopicGate, compute_corpus_centroid
 from voice_rag.pipeline.reranking.service import RerankerService
-from voice_rag.pipeline.retrieval.dense.index import collection_name, get_client
+from voice_rag.pipeline.retrieval.dense.index import collection_name, get_client, stable_point_id
 from voice_rag.pipeline.retrieval.fusion.rrf import reciprocal_rank_fusion
 from voice_rag.pipeline.retrieval.sparse.bm25_index import Bm25Index
 
@@ -169,11 +169,34 @@ def run_benchmark(
         fused_ids = [cid for cid, _ in fused][:rerank_candidates]
         stage_timings["fusion_ms"].append((time.perf_counter() - t0) * 1000)
 
+        # BM25-only candidate recovery, overlapped with reranking — mirrors
+        # api/main.py so the benchmark measures the pipeline that actually ships.
+        missing_ids = [cid for cid in fused_ids if cid not in payload_by_id]
+        recovery_f = (
+            executor.submit(
+                client.retrieve,
+                collection_name=coll,
+                ids=[stable_point_id(cid) for cid in missing_ids],
+                with_payload=True,
+            )
+            if missing_ids
+            else None
+        )
+
         t0 = time.perf_counter()
-        valid_ids = [cid for cid in fused_ids if cid in payload_by_id]
-        texts = [payload_by_id[cid]["text"] for cid in valid_ids]
-        if texts:
-            reranker.rerank(query_text, texts)
+        known_ids = [cid for cid in fused_ids if cid in payload_by_id]
+        texts = [payload_by_id[cid]["text"] for cid in known_ids]
+        known_scores = reranker.rerank(query_text, texts) if texts else []
+        # Same adaptive gate as api/main.py: skip BM25's extra candidates when
+        # the vector searches already produced a decisively confident passage.
+        already_decisive = bool(known_scores) and max(known_scores) >= EXTRACTIVE_CONFIDENCE_THRESHOLD
+        if recovery_f is not None and not already_decisive:
+            for point in recovery_f.result():
+                if point.payload and "chunk_id" in point.payload:
+                    payload_by_id[point.payload["chunk_id"]] = point.payload
+            recovered_texts = [payload_by_id[cid]["text"] for cid in missing_ids if cid in payload_by_id]
+            if recovered_texts:
+                reranker.rerank(query_text, recovered_texts)
         stage_timings["rerank_ms"].append((time.perf_counter() - t0) * 1000)
 
         stage_timings["retrieval_total_ms"].append((time.perf_counter() - t_total0) * 1000)

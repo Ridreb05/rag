@@ -98,6 +98,44 @@ def test_generation_declined_returns_refused():
     assert "generation_declined" in resp.guardrail_flags
 
 
+class ExplodingGenerator:
+    """Stands in for a provider outage, rate limit, or expired wall-clock budget."""
+
+    model = "exploding-model-v0"
+
+    def __init__(self, exc: Exception):
+        self._exc = exc
+
+    def generate(self, request, max_tokens=2048):
+        raise self._exc
+
+
+def test_generator_failure_degrades_to_extractive_instead_of_erroring():
+    """A remote generation failure must not become a 5xx: retrieval already
+    succeeded, so the top reranked passage is still a grounded answer."""
+    mid = (EXTRACTIVE_CONFIDENCE_THRESHOLD + LOW_CONFIDENCE_THRESHOLD) / 2
+    harness = GenerationHarness(generator=ExplodingGenerator(TimeoutError("budget exceeded")))
+    candidates = [make_candidate(rerank_score=mid, text="Grounded passage text.")]
+
+    resp = harness.answer("t6", "some query", "en", candidates)
+
+    assert resp.mode == "extractive"
+    assert resp.answer_text == "Grounded passage text."
+    assert resp.claims[0].cited_chunk_ids == ["c1"]
+    assert "generation_unavailable_extractive_fallback" in resp.guardrail_flags
+
+
+def test_generator_failure_with_no_candidates_refuses():
+    """With nothing retrieved there is no grounded fallback, so refuse rather
+    than invent an answer."""
+    harness = GenerationHarness(generator=ExplodingGenerator(RuntimeError("provider down")))
+    # Confidence high enough to reach generation, but the candidate list is
+    # emptied to simulate having no usable evidence at fallback time.
+    harness_resp = harness.answer("t7", "some query", "en", [])
+
+    assert harness_resp.mode == "refused"
+
+
 def test_low_entailment_claim_is_dropped_and_falls_back_to_refused():
     mid = (EXTRACTIVE_CONFIDENCE_THRESHOLD + LOW_CONFIDENCE_THRESHOLD) / 2
     generated = GeneratedAnswer(
