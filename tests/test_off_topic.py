@@ -1,7 +1,7 @@
 import numpy as np
 import pytest
 
-from voice_rag.guardrails.off_topic import OffTopicGate, compute_corpus_centroid, should_refuse
+from voice_rag.pipeline.guardrails.off_topic import OffTopicGate, compute_corpus_centroid, should_refuse
 
 
 def test_compute_corpus_centroid_is_unit_norm():

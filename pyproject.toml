@@ -7,7 +7,6 @@ authors = [
 ]
 requires-python = ">=3.11,<3.12"
 dependencies = [
-    "anthropic>=0.121.0",
     "datasets>=5.0.1",
     "fastapi[standard]>=0.141.1",
     "flagembedding>=1.4.0",

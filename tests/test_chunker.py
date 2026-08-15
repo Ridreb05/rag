@@ -1,6 +1,6 @@
-from voice_rag.chunking.chunker import ChunkingConfig, chunk_passage
-from voice_rag.chunking.sentence_split import split_sentences
-from voice_rag.chunking.tokenizer import whitespace_token_counter
+from voice_rag.pipeline.chunking.chunker import ChunkingConfig, chunk_passage
+from voice_rag.pipeline.chunking.sentence_split import split_sentences
+from voice_rag.pipeline.chunking.tokenizer import whitespace_token_counter
 
 
 def test_short_passage_is_kept_whole():
@@ -52,7 +52,7 @@ def test_pathologically_long_single_sentence_falls_back_to_fixed_token():
 def test_overlap_must_be_smaller_than_window():
     import pytest
 
-    from voice_rag.chunking.chunker import _fixed_token_windows
+    from voice_rag.pipeline.chunking.chunker import _fixed_token_windows
 
     with pytest.raises(ValueError):
         _fixed_token_windows(["a"] * 20, window_tokens=10, overlap_tokens=10)

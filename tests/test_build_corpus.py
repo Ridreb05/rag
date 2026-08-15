@@ -1,4 +1,4 @@
-from voice_rag.ingestion.build_corpus import _content_hash
+from voice_rag.pipeline.ingestion.build_corpus import _content_hash
 
 
 def test_content_hash_normalizes_whitespace():

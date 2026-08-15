@@ -1,14 +1,14 @@
-from voice_rag.generation.harness import (
+from voice_rag.pipeline.generation.harness import (
     EXTRACTIVE_CONFIDENCE_THRESHOLD,
     LOW_CONFIDENCE_THRESHOLD,
     GenerationHarness,
 )
-from voice_rag.generation.schemas import GeneratedAnswer, GeneratedClaim, RetrievalCandidate
-from voice_rag.guardrails.grounding import ClaimValidation
+from voice_rag.pipeline.generation.schemas import GeneratedAnswer, GeneratedClaim, RetrievalCandidate
+from voice_rag.pipeline.guardrails.grounding import ClaimValidation
 
 
 class FakeGenerator:
-    """Stands in for AnthropicGenerationService — no network, no API key."""
+    """Stands in for GeminiGenerationService — no network, no API key."""
 
     model = "fake-model-v0"
 
@@ -87,7 +87,7 @@ def test_mid_confidence_calls_generative_path():
 
 
 def test_generation_declined_returns_refused():
-    gen = FakeGenerator(response=None)  # None simulates Claude's stop_reason == "refusal"
+    gen = FakeGenerator(response=None)  # None simulates Gemini declining to return a candidate
     mid = (EXTRACTIVE_CONFIDENCE_THRESHOLD + LOW_CONFIDENCE_THRESHOLD) / 2
     harness = GenerationHarness(generator=gen)
     candidates = [make_candidate(rerank_score=mid)]

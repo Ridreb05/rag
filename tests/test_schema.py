@@ -1,7 +1,7 @@
 import pytest
 from pydantic import ValidationError
 
-from voice_rag.ingestion.schema import LANGUAGES, LANGUAGES_WITHOUT_TRAIN, Passages, parquet_path, resolve_url
+from voice_rag.pipeline.ingestion.schema import LANGUAGES, LANGUAGES_WITHOUT_TRAIN, Passages, parquet_path, resolve_url
 
 
 def test_parquet_path_uses_real_filename_stems_not_iso_codes():

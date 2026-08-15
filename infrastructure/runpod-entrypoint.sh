@@ -115,12 +115,12 @@ if [ "${VOICE_RAG_BOOTSTRAP_INDEX:-0}" = "1" ]; then
   if [ ! -f "$chunks_path" ]; then
     if [ ! -f "$passages_path" ]; then
       echo "Downloading and normalizing the corpus."
-      /app/.venv/bin/python -m voice_rag.ingestion.build_corpus --languages "$index_language" --split "$index_split"
+      /app/.venv/bin/python -m voice_rag.pipeline.ingestion.build_corpus --languages "$index_language" --split "$index_split"
     else
       echo "Reusing persisted normalized corpus."
     fi
     echo "Building chunks from the persisted corpus."
-    /app/.venv/bin/python -m voice_rag.chunking.build_chunks --languages "$index_language" --split "$index_split"
+    /app/.venv/bin/python -m voice_rag.pipeline.chunking.build_chunks --languages "$index_language" --split "$index_split"
   else
     echo "Reusing persisted chunks."
   fi
@@ -161,4 +161,4 @@ echo "Starting Voice RAG API on port 8000."
 # ``exec`` replaces this shell, so release the bootstrap lock explicitly
 # rather than depending on the shell EXIT trap.
 release_bootstrap_lock
-exec /app/.venv/bin/uvicorn voice_rag.apps.api_gateway.main:app --host 0.0.0.0 --port 8000
+exec /app/.venv/bin/uvicorn voice_rag.api.main:app --host 0.0.0.0 --port 8000

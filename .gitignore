@@ -9,12 +9,14 @@ wheels/
 # Virtual environments
 .venv
 
-# Generated data — reproducible via voice_rag.ingestion / voice_rag.chunking
-# CLIs (see README.md), not source. data/processed alone is ~1.7GB.
+# Generated data — reproducible via voice_rag.pipeline.ingestion /
+# voice_rag.pipeline.chunking CLIs (see README.md), not source.
+# data/processed alone is ~1.7GB.
 data/
 
-# Per-language JSON stats from voice_rag.ingestion.analyze — regenerate via
-# the command in README.md rather than tracking generated output.
+# Per-language JSON stats from voice_rag.pipeline.ingestion.analyze —
+# regenerate via the command in README.md rather than tracking generated
+# output.
 reports/
 
 # Secrets
@@ -28,5 +30,17 @@ reports/
 # Frontend (frontend/dist is covered by dist/ above)
 frontend/node_modules/
 
+# Local build-context staging for the Cloud Run image (bakes in a completed
+# index) — large binary data, never meant to be committed.
+cloudrun-data/
+
 # Local Claude Code project notes — not part of the submission
 CLAUDE.md
+AGENTS.md
+# Local Markdown documentation; keep the project README trackable
+*.md
+!README.md
+
+# Large exports and audio files
+hindi_index_export.tar.gz
+*.wav

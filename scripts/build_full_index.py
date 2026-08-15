@@ -33,8 +33,8 @@ import pandas as pd
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from voice_rag.embeddings.service import EmbeddingService, MODEL_NAME
-from voice_rag.retrieval.dense.index import (
+from voice_rag.pipeline.embeddings.service import EmbeddingService, MODEL_NAME
+from voice_rag.pipeline.retrieval.dense.index import (
     IndexedChunk,
     collection_name,
     enable_dense_hnsw,
@@ -44,7 +44,7 @@ from voice_rag.retrieval.dense.index import (
     verify_bulk_upload_config,
     verify_search_index_config,
 )
-from voice_rag.retrieval.sparse.bm25_index import Bm25Index
+from voice_rag.pipeline.retrieval.sparse.bm25_index import Bm25Index
 
 logger = logging.getLogger(__name__)
 PROCESSED_DIR = Path("data/processed")

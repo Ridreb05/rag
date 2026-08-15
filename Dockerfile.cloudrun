@@ -1,0 +1,61 @@
+# syntax=docker/dockerfile:1.7
+#
+# Cloud Run variant: bakes the completed Hindi index into the image instead
+# of relying on a mounted persistent volume (Cloud Run's storage model
+# doesn't fit the RunPod volume pattern, and the index is static at serve
+# time anyway — baking it in sidesteps volume-attachment entirely).
+# Build context must contain cloudrun-data/{qdrant,bm25,state.json},
+# staged from a verified hindi_index_export.tar.gz extraction.
+
+FROM node:20-slim AS frontend-builder
+WORKDIR /app/frontend
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
+FROM qdrant/qdrant:v1.13.4 AS qdrant-runtime
+
+# CUDA 12.x runtime; Cloud Run's L4 GPU nodes run current NVIDIA drivers,
+# unlike the older RunPod hosts the CUDA 11.8 base image was pinned for.
+FROM nvidia/cuda:12.4.1-runtime-ubuntu22.04
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    python3.11 python3.11-venv python3-pip curl ca-certificates libunwind8 \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:${PATH}"
+
+WORKDIR /app
+
+COPY pyproject.toml uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --no-install-project
+
+COPY src/ ./src/
+COPY scripts/ ./scripts/
+COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
+COPY --from=qdrant-runtime /qdrant /opt/qdrant
+COPY infrastructure/cloudrun-entrypoint.sh /usr/local/bin/cloudrun-entrypoint
+RUN chmod +x /usr/local/bin/cloudrun-entrypoint
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev
+
+# The baked-in index itself — the large layer.
+COPY cloudrun-data/ /app/cloudrun-data/
+
+RUN PYTHONPATH=/app/src /app/.venv/bin/python -c "from voice_rag.api.main import app; print(app.title)"
+
+ENV PYTHONPATH=/app/src
+ENV PYTHONUNBUFFERED=1
+ENV QDRANT_URL=http://127.0.0.1:6333
+ENV BM25_PATH=/app/cloudrun-data/bm25
+ENV VOICE_RAG_INDEX_STATE_PATH=/app/cloudrun-data/state.json
+ENV VOICE_RAG_LANGUAGE=hi
+ENV VOICE_RAG_INDEX_VERSION=full1
+ENV VOICE_RAG_INDEX_SPLIT=validation
+ENV VOICE_RAG_REQUIRE_COMPLETE_INDEX=1
+
+# Cloud Run overrides PORT at runtime; 8080 is its default.
+EXPOSE 8080
+
+ENTRYPOINT ["/usr/local/bin/cloudrun-entrypoint"]

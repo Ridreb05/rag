@@ -1,7 +1,7 @@
 """Latency benchmark harness — task requirement: P50/P70/P100 latency
 across a reasonable number of test queries, not a single best-case run.
 
-Reports two honest, separate numbers (docs/04-latency-and-caching.md):
+Reports two honest, separate numbers:
 
 1. **Retrieval pipeline** (embed -> dense+sparse+BM25 -> RRF fuse -> rerank):
    measured across the full query set (default 1000). This is the number
@@ -37,15 +37,15 @@ from qdrant_client import models
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
-from voice_rag.embeddings.service import EmbeddingService
-from voice_rag.generation.gemini_service import GeminiGenerationService
-from voice_rag.generation.harness import GenerationHarness
-from voice_rag.generation.schemas import RetrievalCandidate
-from voice_rag.guardrails.off_topic import OffTopicGate, compute_corpus_centroid
-from voice_rag.reranking.service import RerankerService
-from voice_rag.retrieval.dense.index import collection_name, get_client
-from voice_rag.retrieval.fusion.rrf import reciprocal_rank_fusion
-from voice_rag.retrieval.sparse.bm25_index import Bm25Index
+from voice_rag.pipeline.embeddings.service import EmbeddingService
+from voice_rag.pipeline.generation.gemini_service import GeminiGenerationService
+from voice_rag.pipeline.generation.harness import GenerationHarness
+from voice_rag.pipeline.generation.schemas import RetrievalCandidate
+from voice_rag.pipeline.guardrails.off_topic import OffTopicGate, compute_corpus_centroid
+from voice_rag.pipeline.reranking.service import RerankerService
+from voice_rag.pipeline.retrieval.dense.index import collection_name, get_client
+from voice_rag.pipeline.retrieval.fusion.rrf import reciprocal_rank_fusion
+from voice_rag.pipeline.retrieval.sparse.bm25_index import Bm25Index
 
 logger = logging.getLogger(__name__)
 PROCESSED_DIR = Path("data/processed")
@@ -82,6 +82,7 @@ def run_benchmark(
     reranker = RerankerService()
     client = get_client(path=None if qdrant_url else qdrant_path, url=qdrant_url)
     coll = collection_name(language, index_version)
+    corpus_points_count = client.get_collection(coll).points_count
     bm25 = Bm25Index(bm25_path)
     executor = ThreadPoolExecutor(max_workers=3, thread_name_prefix="retrieval")
 
@@ -90,11 +91,18 @@ def run_benchmark(
         result = fn()
         return result, (time.perf_counter() - t0) * 1000
 
-    def _retrieve(q_embed, query_text, k):
-        """Runs dense/sparse (Qdrant round trips) and BM25 (local) concurrently
-        — they're independent given q_embed. Returns hits plus each signal's
-        own elapsed time (for the per-stage breakdown) and the actual wall
-        time of the parallel window (for the honest total)."""
+    def _start_bm25(query_text, k):
+        """BM25 needs only the raw query string, so it is started *before* the
+        encoder rather than after it — see the matching comment in
+        api/main.py. Its cost then overlaps the GPU embedding call instead of
+        adding to it."""
+        return executor.submit(_timed, lambda: bm25.search(query_text, top_k=k))
+
+    def _retrieve(q_embed, bm25_f, k):
+        """Runs the two Qdrant vector searches concurrently and collects the
+        already-in-flight BM25 result. Returns hits plus each signal's own
+        elapsed time (for the per-stage breakdown) and the actual wall time of
+        the parallel window (for the honest total)."""
         t_wall0 = time.perf_counter()
         dense_f = executor.submit(
             _timed,
@@ -113,7 +121,6 @@ def run_benchmark(
                 limit=k,
             ).points,
         )
-        bm25_f = executor.submit(_timed, lambda: bm25.search(query_text, top_k=k))
         (dense_hits, dense_ms) = dense_f.result()
         (sparse_hits, sparse_ms) = sparse_f.result()
         (bm25_hits, bm25_ms) = bm25_f.result()
@@ -141,13 +148,14 @@ def run_benchmark(
             continue
 
         t_total0 = time.perf_counter()
+        bm25_f = _start_bm25(query_text, top_k_per_signal)
 
         t0 = time.perf_counter()
         q_embed = embedding.embed_query(query_text)
         stage_timings["embedding_ms"].append((time.perf_counter() - t0) * 1000)
 
         dense_hits, sparse_hits, bm25_hits, dense_ms, sparse_ms, bm25_ms, _wall = _retrieve(
-            q_embed, query_text, top_k_per_signal
+            q_embed, bm25_f, top_k_per_signal
         )
         stage_timings["dense_retrieval_ms"].append(dense_ms)
         stage_timings["sparse_retrieval_ms"].append(sparse_ms)
@@ -176,10 +184,16 @@ def run_benchmark(
     retrieval_report = {stage: percentile_report(vals) for stage, vals in stage_timings.items() if vals}
 
     # --- end-to-end subset, including the real generative/extractive/guardrail path ---
+    # Re-embeds sampled chunk TEXT rather than asking Qdrant for stored vector
+    # values — verified that qdrant-client 1.19.0 against the pinned
+    # qdrant/qdrant:v1.13.4 server silently returns all-zero vectors for
+    # `with_vectors=...` (search itself is unaffected, only the response
+    # deserialization is), which would otherwise give every query a
+    # zero-vector off-topic similarity and refuse 100% of them.
     logger.info("Building off-topic gate and running end-to-end benchmark over %d queries...", n_queries_e2e)
-    points, _ = client.scroll(collection_name=coll, limit=2000, with_vectors=["dense"])
-    vecs = np.array([p.vector["dense"] for p in points if p.vector and "dense" in p.vector])
-    off_topic_gate = OffTopicGate(compute_corpus_centroid(vecs)) if vecs.shape[0] else None
+    points, _ = client.scroll(collection_name=coll, limit=2000, with_payload=["text"])
+    texts = [p.payload["text"] for p in points if p.payload and p.payload.get("text")]
+    off_topic_gate = OffTopicGate(compute_corpus_centroid(embedding.embed(texts).dense)) if texts else None
 
     generator = GeminiGenerationService()
     harness = GenerationHarness(generator=generator, grounding_validator=None, off_topic_gate=off_topic_gate)
@@ -194,8 +208,9 @@ def run_benchmark(
             continue
 
         t0 = time.perf_counter()
+        bm25_f = _start_bm25(query_text, top_k_per_signal)
         q_embed = embedding.embed_query(query_text)
-        dense_hits, sparse_hits, bm25_hits, *_ = _retrieve(q_embed, query_text, top_k_per_signal)
+        dense_hits, sparse_hits, bm25_hits, *_ = _retrieve(q_embed, bm25_f, top_k_per_signal)
         payload_by_id = {h.payload["chunk_id"]: h.payload for h in [*dense_hits, *sparse_hits]}
         fused = reciprocal_rank_fusion(
             [[h.payload["chunk_id"] for h in dense_hits], [h.payload["chunk_id"] for h in sparse_hits], [c for c, _ in bm25_hits]]
@@ -222,7 +237,7 @@ def run_benchmark(
     return {
         "language": language,
         "index_version": index_version,
-        "corpus_size_note": "benchmark index — see report for exact chunk count",
+        "corpus_points_count": corpus_points_count,
         "retrieval_pipeline_ms": retrieval_report,
         "end_to_end_ms": e2e_report,
         "end_to_end_mode_breakdown": mode_counts,
@@ -268,9 +283,9 @@ def write_markdown(result: dict, out_path: Path) -> None:
         "is dominated by whichever branch the guardrail/router picks: `refused` and `extractive` "
         "answers add near-zero cost on top of retrieval (no LLM call); `generative` answers pay a "
         "real LLM API round-trip, which is why the end-to-end distribution has a long tail. This "
-        "is reported in full, not averaged away — see docs/04-latency-and-caching.md for why a "
-        "fully generated multi-sentence answer cannot realistically fit a 200ms budget on any "
-        "current LLM serving stack, local or API-based."
+        "is reported in full, not averaged away — a fully generated multi-sentence answer cannot "
+        "realistically fit a 200ms budget on any current LLM serving stack, local or API-based, "
+        "regardless of how confident the retrieval/guardrail routing is."
     )
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_path.write_text("\n".join(lines), encoding="utf-8")

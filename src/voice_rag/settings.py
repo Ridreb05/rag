@@ -15,7 +15,6 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", env_file_encoding="utf-8", extra="ignore")
 
     sarvam_api_key: str | None = None
-    anthropic_api_key: str | None = None  # read by the `anthropic` SDK itself if unset here
     gemini_api_key: str | None = None
 
 

@@ -1,7 +1,7 @@
 import time
 
-from voice_rag.apps.api_gateway.rate_limit import InMemoryRateLimiter
-from voice_rag.apps.api_gateway.rate_limit import RateLimitMiddleware
+from voice_rag.api.rate_limit import InMemoryRateLimiter
+from voice_rag.api.rate_limit import RateLimitMiddleware
 
 
 def test_allows_up_to_max_requests():

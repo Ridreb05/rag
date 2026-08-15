@@ -1,6 +1,6 @@
 import tempfile
 
-from voice_rag.retrieval.sparse.bm25_index import Bm25Index
+from voice_rag.pipeline.retrieval.sparse.bm25_index import Bm25Index
 
 
 def test_bm25_finds_relevant_document():

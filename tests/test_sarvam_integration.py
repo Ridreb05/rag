@@ -29,7 +29,7 @@ def _normalize_for_comparison(text: str) -> str:
 
 @requires_sarvam_key
 def test_tts_then_stt_round_trip_recovers_original_hindi_text():
-    from voice_rag.stt.sarvam_client import SarvamSttClient, SarvamTtsClient
+    from voice_rag.pipeline.stt.sarvam_client import SarvamSttClient, SarvamTtsClient
 
     tts = SarvamTtsClient()
     stt = SarvamSttClient()

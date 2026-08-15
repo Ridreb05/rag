@@ -1,432 +1,278 @@
-<p align="center">
-  <img src="https://capsule-render.vercel.app/api?type=waving&color=0:1a0e0a,50:7c4a0e,100:f59e0b&height=200&section=header&text=VOICE%20RAG&fontSize=64&fontColor=F1F1F3&animation=fadeIn&fontAlignY=36&desc=Hindi%20speech%20in%20%C2%B7%20grounded%20answer%20out%20%C2%B7%20refuses%20when%20it%20should&descAlignY=57&descSize=16&descColor=FDE68A" />
-</p>
+# ClearAsk — Voice-Enabled RAG over MSMARCO-XI
 
-<p align="center">
-  <img src="https://readme-typing-svg.demolab.com/?font=JetBrains+Mono&weight=600&size=17&duration=3200&pause=800&color=F59E0B&center=true&vCenter=true&width=760&height=40&lines=Hybrid+retrieval%3A+dense+%2B+sparse+%2B+BM25%2C+RRF-fused.;Every+generated+claim+is+NLI-checked+against+its+citation.;Refuses+below+a+0.2+confidence+floor+%E2%80%94+on+purpose.;Every+number+below+came+from+a+run+in+this+repo." />
-</p>
+Submission for **HH Goa 2026 Shortlisting Task 2: Build a Voice-Enabled RAG Model**.
 
-<p align="center">
-  <img src="https://img.shields.io/github/actions/workflow/status/Ridreb05/rag/container.yml?style=flat-square&label=image%20build&labelColor=1a0e0a" />
-  <img src="https://img.shields.io/badge/tests-91%20passed-4ade80?style=flat-square&labelColor=1a0e0a" />
-  <img src="https://img.shields.io/badge/guardrails-4%20independent%20layers-4ade80?style=flat-square&labelColor=1a0e0a" />
-  <img src="https://img.shields.io/badge/retrieval_P50-64.8_ms-f59e0b?style=flat-square&labelColor=1a0e0a" />
-  <img src="https://img.shields.io/badge/corpus-964k_hi_chunks-f59e0b?style=flat-square&labelColor=1a0e0a" />
-  <img src="https://img.shields.io/badge/languages_profiled-5%2F14-f59e0b?style=flat-square&labelColor=1a0e0a" />
-  <img src="https://img.shields.io/badge/python-3.11-3776AB?style=flat-square&labelColor=1a0e0a" />
-</p>
+A user speaks a question in Hindi, the system transcribes it, retrieves grounded evidence from
+[`ai4bharat/MSMARCO-XI`](https://huggingface.co/datasets/ai4bharat/MSMARCO-XI), and answers —
+citing exactly which retrieved passages support each claim, and refusing outright when it can't
+find enough evidence.
 
----
+- **GitHub repo:** https://github.com/Ridreb05/rag
+- **Live link:** _to be added before submission_
+- **Dataset:** `ai4bharat/MSMARCO-XI`, Hindi (`hi`) validation split, indexed in full — 964,603
+  chunks, index version `full1`
 
-**Dataset:** [ai4bharat/MSMARCO-XI](https://huggingface.co/datasets/ai4bharat/MSMARCO-XI) (14 Indic languages; built and indexed on Hindi, profiled across 5)
-
-Built for **HH Goa 2026 Shortlisting Task 2 — Voice-Enabled RAG**. This document maps
-every requirement in the task brief directly to the code and evidence that satisfies
-it. Everything referenced here is real code, run against real data, on a real GPU —
-not a design sketch. Where a number is quoted, it was measured (`reports/`,
-`benchmark/`), not estimated. There is no live public URL right now — RunPod pods here
-are stopped between test runs to avoid idle billing, not always-on — so "run it" below
-is the actual reproduction path, not a formality.
+## Pipeline shape
 
 ```
-Voice (mic) ──Sarvam STT──┐
-                           ├─► Query text ─► Hybrid retrieval (dense + sparse + BM25)
-Text query ────────────────┘                 ─► RRF fusion ─► Rerank ─► Guardrail gate
-                                              ─► Extractive / Generative router
-                                              ─► (Gemini, grounded + per-claim cited)
-                                              ─► Response
+Voice input → Sarvam speech-to-text → Chunking/Retrieval (Qdrant hybrid dense+sparse
+              + Tantivy BM25, fused with RRF, reranked) → Answer generation
+              (guardrail-gated harness, Gemini, grounded citations)
 ```
 
-Implemented in `src/voice_rag/`, wired together in
-[`src/voice_rag/apps/api_gateway/main.py`](src/voice_rag/apps/api_gateway/main.py)
-(`POST /v1/query`, `POST /v1/voice-query`).
+Both a typed text query (`POST /v1/query`) and a recorded voice query (`POST /v1/voice-query`,
+multipart audio) run the same retrieval → guardrail → generation path; voice just adds a Sarvam
+transcription step in front.
 
----
+## Speech-to-text
 
-## Architecture
+**Sarvam** (`saarika` STT REST API), chosen per the task's "Sarvam or ElevenLabs, pick one"
+requirement. Batch/synchronous endpoint only (files under 30s) — implemented as a direct REST
+client (`pipeline/stt/sarvam_client.py`) rather than the streaming WebSocket variant, to get a
+real, testable STT round trip first. A browser `MediaRecorder` records, then submits; there's no
+live streaming transcription.
 
-```mermaid
-flowchart TB
-    subgraph CLIENT["🎙️ BROWSER — React 18 + TS + Tailwind + Framer Motion"]
-        MIC["MediaRecorder<br/>webm/mp4"]
-        TXT["text input"]
-    end
+## Chunking
 
-    subgraph EDGE["⚡ FastAPI — one warm worker pool"]
-        VQ["POST /v1/voice-query<br/>multipart"]
-        Q["POST /v1/query<br/>json"]
-    end
+Chunking is adaptive, not a single fixed-size pass. `pipeline/chunking/chunker.py` picks per
+passage:
 
-    STT["Sarvam Saaras v3<br/>STT, sync ≤30s clips"]
+1. **Whole-passage (no split).** MSMARCO-XI passages are already short, pre-segmented units —
+   dataset analysis of the Hindi validation split puts the median passage at 55 words (p90 91,
+   p99 139). For the overwhelming majority of passages, chunking is correctly a no-op: splitting
+   an already-short passage would only fragment context for no retrieval benefit. This is the
+   dataset-appropriate default, verified against a real sample rather than assumed.
+2. **Sentence-aware packing**, for passages that exceed the token budget (default 512 tokens):
+   greedily packs whole sentences into ~256-token windows with 64-token overlap, so a chunk
+   boundary never lands mid-sentence. Overlap carries trailing sentences into the next window.
+3. **Fixed-token-window fallback**, for the rare case sentence-aware packing can't help — either
+   no usable sentence boundary was found, or a single sentence alone exceeds the window size.
+   Falls back to plain overlapping word windows.
+4. **Metadata-aware chunk identity.** Every chunk carries `passage_id`, `language`,
+   `chunk_index`, `token_count`, and which strategy produced it, plus a `level`/`parent_id`
+   schema hook for hierarchical (document → section → passage) chunking — inert on MSMARCO-XI,
+   which has no document/section structure, but the schema doesn't need to change if the system
+   is ever pointed at real long-form documents.
 
-    subgraph PIPE["🧠 per-request pipeline"]
-        direction TB
-        EMB["embed · BAAI/bge-m3<br/>dense + sparse, one model"]
-        DEN["dense · Qdrant HNSW<br/>7.76 ms p50"]
-        SP["sparse · Qdrant<br/>5.91 ms p50"]
-        BM["BM25 · Tantivy<br/>1.85 ms p50"]
-        FUSE["RRF fusion k=60<br/>0.04 ms p50"]
-        RR["rerank · bge-reranker-v2-m3<br/>top-8 · 26.4 ms p50"]
-        HARN["Generation Harness<br/>safety + scope gate → router"]
-        EMB --> DEN & SP & BM --> FUSE --> RR --> HARN
-    end
+Chunk-length accounting uses a whitespace token counter deliberately decoupled from the
+embedding model's own tokenizer (to avoid a heavy `transformers` dependency in the chunker
+itself), verified against real corpus samples to be an adequate approximation, not presented as
+an exact token count.
 
-    subgraph STORE["💾"]
-        VEC[("Qdrant<br/>dense + sparse vectors")]
-        LEX[("Tantivy<br/>BM25 index")]
-    end
+## Retrieval
 
-    subgraph GEN["✨ generative path only"]
-        GEM["Gemini (default)<br/>or Claude — same interface"]
-        NLI["mDeBERTa-v3 NLI<br/>per-claim entailment ≥ 0.5"]
-        GEM --> NLI
-    end
+Three independent signals run concurrently per query and get fused, not just one:
 
-    MIC -->|PCM/webm| VQ --> STT -->|transcript| EMB
-    TXT --> Q --> EMB
-    DEN -.-> VEC
-    SP -.-> VEC
-    BM -.-> LEX
-    HARN -->|rerank ≥ 0.85| EXT["extractive answer<br/>no LLM call"]
-    HARN -->|"0.2–0.85"| GEM
-    HARN -->|"below 0.2, or off-topic"| REF["refused<br/>+ reason flag"]
-    NLI -->|grounded claims| OUT["QueryResponse"]
-    EXT --> OUT
-    REF --> OUT
+- **Dense** — BGE-M3 (`BAAI/bge-m3`) 1024-dim embeddings in Qdrant, cosine ANN search.
+- **Sparse (learned)** — BGE-M3's own learned lexical-weight output, also in Qdrant, as a named
+  sparse vector alongside dense in the same collection.
+- **Sparse (lexical)** — Tantivy BM25, embedded (no server), a model-independent third signal
+  that keeps working even if the embedding service degrades, and catches exact IDs/numbers/proper
+  nouns an embedding-based signal can under-weight.
 
-    style EXT fill:#123a24,stroke:#4ade80,color:#fff
-    style REF fill:#3d1f0a,stroke:#f59e0b,color:#fff
-    style GEN fill:#1a1030,stroke:#a78bfa,color:#fff
-    style STORE fill:#2a1a08,stroke:#f59e0b,color:#fff
-```
+The three ranked lists are fused with **Reciprocal Rank Fusion** (`k=60`) — chosen over weighted
+score fusion because dense cosine, BGE-M3 sparse, and BM25 scores live on incompatible scales;
+RRF only needs rank order, so no per-language score calibration is required. The fused top
+candidates (8) are reranked with a BGE cross-encoder (`bge-reranker-v2-m3`) before the harness
+sees them.
 
-### One request, end to end
+## Generation harness
 
-```mermaid
-sequenceDiagram
-    autonumber
-    participant U as User
-    participant S as Sarvam STT
-    participant A as api_gateway
-    participant Q as Qdrant + BM25
-    participant HN as Harness
-    participant G as Gemini
+`pipeline/generation/harness.py` is a typed orchestrator, not a raw prompt-in/text-out call:
 
-    alt spoken query
-        U->>S: POST audio (multipart)
-        S-->>A: transcript
-    else typed query
-        U->>A: POST /v1/query
-    end
-    A->>A: embed query · bge-m3 · ~25 ms
-    par concurrent — independent given the embedding
-        A->>Q: dense search
-        A->>Q: sparse search
-        A->>A: BM25 (in-process Tantivy)
-    end
-    A->>A: RRF fuse (k=60) → top 8 → rerank
-    A->>HN: harness.answer(candidates, rerank_score)
-    HN->>HN: unsafe-input regex check
-    HN->>HN: off-topic (cosine<0.35) / low-confidence (<0.2) check
-    alt rerank_score ≥ 0.85
-        HN-->>A: extractive answer, no LLM call
-    else rerank_score between 0.2 and 0.85
-        HN->>G: structured-output generation request
-        G-->>HN: claims + citations
-        HN->>HN: NLI entailment per claim ≥ 0.5
-        HN-->>A: generative answer (claims below 0.5 dropped)
-    else refused
-        HN-->>A: fixed refusal message + guardrail_flags
-    end
-    A-->>U: QueryResponse (mode, confidence, evidence, latency_ms)
-```
+1. **Safety pre-filter** — a cheap deterministic regex gate runs before retrieval, so an
+   obviously unsafe query never spends an embedding call, a Qdrant round trip, or a reranker
+   pass.
+2. **Confidence-routed answering** — the reranker's top score decides the path:
+   - `< 0.2` → refuse outright (below this, retrieval didn't find real support).
+   - `0.2 – 0.85` → generate, via Gemini (`gemini-flash-latest`) with structured output
+     (`generationConfig.responseSchema` against a JSON schema: `answer_text` plus per-claim
+     `cited_chunk_ids`) — this is what makes citations machine-checkable downstream, not
+     free-text parsing.
+   - `≥ 0.85` → answer extractively (return the top passage directly), skipping the LLM call
+     entirely when retrieval is already confident.
+3. **Error recovery** — Gemini's own safety filtering returning zero candidates or a blocked
+   `finishReason` (`SAFETY`/`PROHIBITED_CONTENT`/`BLOCKLIST`/`RECITATION`) is treated as a
+   guardrail outcome, not a crash. Since Gemini is called via a raw REST API rather than a
+   provider SDK, retry/backoff for transient failures (network errors, 429, 5xx) is implemented
+   explicitly in `gemini_service.py`, with exponential backoff and immediate failure on
+   non-retryable 4xx errors.
+4. **Grounding validation** (when loaded) — every generated claim is re-checked against its
+   cited evidence chunk(s) with a multilingual NLI cross-encoder
+   (`MoritzLaurer/mDeBERTa-v3-base-mnli-xnli`), scored per claim rather than one opaque
+   groundedness number for the whole answer. Claims with entailment `< 0.5`, or no valid
+   citation at all, are dropped; the displayed answer is rebuilt only from surviving claims —
+   never the model's raw prose once grounding is active.
 
-> **Honest wiring note:** the safety and scope gates live inside `GenerationHarness.answer`,
-> which `main.py` only calls *after* embedding + hybrid retrieval + rerank have already run.
-> They reliably stop an unsafe or off-topic query before it reaches the LLM — they do **not**
-> currently save the retrieval cost, despite what the guardrail module's docstring implies in
-> isolation. Moving the check earlier in `main.py` is a real, not-yet-done follow-up (see
-> **Honestly incomplete** below), not a claim made and left unverified.
+## Guardrails
 
----
+The system is built to know when *not* to answer, not just how to answer:
 
-## Latency — retrieval pipeline
+- **Unsafe-input pre-filter** — keyword/regex gate for self-harm, violence-instruction, and
+  CSAE-adjacent patterns, ahead of retrieval.
+- **Confidence-based refusal** — below the `0.2` rerank-confidence threshold, the harness
+  refuses rather than guesses.
+- **Off-topic centroid gate** — cosine distance from the query embedding to the indexed
+  corpus's centroid, catching queries entirely outside the knowledge base's topic
+  (`guardrails/off_topic.py`, covered by tests). Wired into the live API's harness construction
+  (`api/main.py` passes the constructed gate into `GenerationHarness`), so both signals —
+  confidence-based refusal and centroid-based off-topic rejection — are active on the real
+  request path, not just in the benchmark harness.
+- **Hallucination / grounding check** — the per-claim NLI entailment filter described above,
+  optional at startup (degrades gracefully, not silently, if the NLI model fails to load).
+- **Provider-level safety** — Gemini's own trained safety classifier as a second, more capable
+  layer behind the local pre-filter.
 
-Measured with `benchmark/latency_benchmark.py`, N=1000 real queries sampled from the Hindi
-validation split, against a real Qdrant **server** (not embedded local mode — see *why the
-server matters* below), K=8 candidates per signal, dense/sparse/BM25 run concurrently.
+## Latency
 
-```
-embed   ████████████████████████████████████   25.34 ms
-dense   ███████████                              7.76 ms   ⎫
-sparse  █████████                                5.91 ms   ⎬ run concurrently, not summed
-bm25    ███                                       1.85 ms  ⎭
-fuse    ▏                                         0.04 ms
-rerank  ████████████████████████████████████████ 26.43 ms
-                                                            (each bar independently
-                                                             scaled to its own p50 ms)
-```
+Measured with `benchmark/latency_benchmark.py` against a real Qdrant server running the actual
+deployed index — Hindi, index version `full1`, 964,603 chunks, the same artifact baked into
+`Dockerfile.cloudrun` — not a smaller stand-in index. 1000 queries for retrieval, 150 for
+end-to-end (a full LLM call dominates that path, so 1000 real calls isn't necessary or cheap —
+but all 150 are reported, including the slow ones, not a best-case sample).
 
-| stage | p50 | p70 | p95 | p99 | p100 |
-|---|---:|---:|---:|---:|---:|
-| embedding (bge-m3) | 25.34 ms | 26.70 ms | 32.03 ms | 44.19 ms | 63.00 ms |
-| dense (Qdrant, parallel) | 7.76 ms | 11.87 ms | 24.13 ms | 30.15 ms | 270.59 ms |
-| sparse (Qdrant, parallel) | 5.91 ms | 8.29 ms | 20.75 ms | 24.90 ms | 101.92 ms |
-| BM25 (Tantivy, parallel) | 1.85 ms | 2.15 ms | 3.19 ms | 7.08 ms | 44.25 ms |
-| RRF fusion | 0.04 ms | 0.04 ms | 0.06 ms | 0.07 ms | 0.24 ms |
-| rerank (top-8) | 26.43 ms | 29.98 ms | 57.61 ms | 86.58 ms | 115.70 ms |
-| **total (real wall-clock)** | **64.84 ms** | 72.64 ms | 99.96 ms | 135.02 ms | 401.62 ms |
+**Retrieval only** (embed → dense+sparse+BM25 → RRF fuse → rerank), n=1000:
 
-**Retrieval-only P50 = 64.8 ms, P70 = 72.6 ms, and P99 = 135.0 ms.** The "total"
-row is measured end-to-end wall-clock for the retrieval pipeline, not a sum of the stage
-columns: dense, sparse and BM25 overlap in time, so their individual rows report each
-signal's own cost, not sequential add-on cost. Its P100 is 401.6 ms, so the retrieval
-pipeline has a cold outlier above the 200 ms target. The complete voice-to-answer path is
-reported separately below and includes external STT and generation latency.
+| | P50 | P70 | P95 | P99 | P100 |
+|---|---|---|---|---|---|
+| **ms** | 64.3 | 71.9 | 88.8 | 134.9 | 535.9 |
 
-*(Measured on the development GPU: RTX 4060 Laptop, 8GB. The deployment target is a
-separate RunPod RTX 4090; benchmark it again there before submitting final latency claims.)*
+Comfortably under the 200ms target through P99; P100 is a single outlier (a slow BM25 call, per
+the per-stage breakdown in `reports/latency_benchmark/hi_full1.md`).
 
-### Why an answer sometimes takes seconds, and why that's reported separately
+**End-to-end** (retrieval + guardrail routing + extractive-or-generative answer), n=150:
 
-N=150 real end-to-end queries, retrieval + guardrail decision + final answer:
+| | P50 | P70 | P95 | P99 | P100 |
+|---|---|---|---|---|---|
+| **ms** | 76.6 | 129.9 | 2550.7 | 3418.5 | 5402.7 |
 
-| percentile | latency | driven by |
-|---|---:|---|
-| P50 | **220.1 ms** | mostly `refused` / `extractive` — no LLM call |
-| P70 | 2970.4 ms | first `generative` queries entering the sample |
-| P95 | 6384.9 ms | LLM round-trip dominates |
-| P99 | 8908.0 ms | " |
-| P100 | 9904.3 ms | " |
+Mode mix over those 150 queries: 96 extractive, 39 refused, 15 generative. Against the real,
+comprehensive index, most queries retrieve a confident-enough top match to skip the LLM entirely
+— **P50 and P70 end-to-end are both under the 200ms target on real production data.** Only the
+tail (P95 and beyond, driven by the ~10% of queries that route to a real Gemini call) exceeds it
+— a real network LLM round-trip cannot fit a 200ms budget on any current serving stack, local or
+API-based, regardless of how confident the routing is. Stated plainly: the full pipeline meets
+<200ms at P50/P70; it does not at P95+, and that remainder is inherent to calling an LLM at all,
+not an implementation gap.
 
-Mode breakdown: **104 refused** (no relevant passage — a correct decline, near-zero cost
-above retrieval), **16 extractive** (rerank score ≥ 0.85, answered with zero LLM calls),
-**30 generative** (needed real synthesis — pays a real Gemini API round-trip). The median
-request, guardrail decision included, is 220 ms — essentially the retrieval-pipeline number
-plus routing overhead. The long tail from P70 onward is exactly and only the 30 queries that
-took the generative path. A system claiming a full generated answer fits under 200 ms on any
-current LLM serving stack would not be telling the truth; this one instead engineers the
-retrieval side to hit the target with margin, routes the majority of traffic around the LLM
-entirely when confidence is already high, and is explicit about where the rest of the latency
-goes.
+### How the hot path was optimized
 
-<details>
-<summary><b>Benchmark methodology — including a real mistake caught and fixed</b></summary>
+The numbers above are ~25% faster at P50 than the first honest measurement of this pipeline
+(retrieval 85.6ms → 64.3ms, end-to-end 95.6ms → 76.6ms). Every change was driven by per-stage
+profiling rather than intuition, and each was verified to leave results unchanged:
 
-<br>
+- **Embedding: 29.4ms → 12.8ms.** `FlagEmbedding.encode()` is built for batch throughput and
+  charges a single query for work it cannot use: it re-runs `model.to(device)` and `.eval()`
+  across all 568M parameters per call, tokenizes then length-sorts the batch, and most costly of
+  all runs the model **twice** — once inside its adaptive batch-size probe loop, then again in
+  the real encode loop. `embed_query` now does one tokenize and one forward through the model's
+  own dense/sparse heads, replicating FlagEmbedding's exact lexical-weight post-processing. The
+  vectors are *bit-identical* to the batch path (max absolute difference 0.0 across dense and
+  sparse over real corpus queries) — which is the requirement, since they are matched against an
+  index built by that batch path.
+- **BM25: 22.0ms → 14.1ms.** `search()` called `Index.reload()` on every query, re-reading index
+  metadata and reopening segment readers from disk each time. A reload is only meaningful after a
+  commit, so the searcher is now cached and explicitly invalidated on write — index builds stay
+  correct, and serving stops paying for a freshness check that can never find anything new.
+- **BM25 taken off the critical path.** It is purely lexical and needs only the raw query string,
+  yet it used to start *after* the encoder. It now runs concurrently with the GPU embedding call,
+  so its cost is absorbed rather than added.
 
-The first benchmark run used Qdrant's embedded **local mode** (used elsewhere in this project
-for fast iteration) and measured **P50 ≈ 920 ms** — nowhere close to target. Re-measuring with
-zero competing background load still showed sparse-vector search at ~600 ms, which pointed at
-local mode itself rather than system contention. Switching to a real Qdrant **server** (Docker
-container, identical index, identical queries) dropped dense retrieval from 145 ms → 13 ms p50
-and sparse retrieval from 602 ms → 8 ms p50 — local mode's sparse search lacks the server's
-optimized inverted-index structures at any real scale. All numbers in this document are from
-the real-server run, reported here alongside the wrong first-pass numbers, because a benchmark
-methodology that isn't itself scrutinized isn't a credible benchmark.
+Two changes were measured and deliberately **not** made. Reducing the reranker's `max_length` does
+nothing (dynamic padding means sequences are already short) and SDPA attention is already the
+default, so the remaining ~34ms of reranking is genuinely compute-bound for a 568M cross-encoder
+on this GPU. Dropping high-document-frequency Hindi function words from BM25 queries is
+substantially faster (14.6ms → 8.4ms) but changes the top BM25 result on 20% of queries — a real
+ranking regression bought for ~1.4ms at P50, since embedding, not BM25, is now the bottleneck of
+that concurrent phase. It was rejected on that evidence.
 
-A second pass found the retrieval stages were running **serially** even though dense, sparse,
-and BM25 are independent given the query embedding — they now run concurrently via a thread
-pool (`ThreadPoolExecutor(max_workers=3)` in `main.py`), and K was tuned down from 20 → 8
-(reranking cost scales with candidate count), pushing well past 200 ms toward the numbers
+**A real bug was found and fixed while producing this evidence.** The first attempt at this
+exact benchmark run came back with 100% of end-to-end queries refused — `qdrant-client==1.19.0`
+(pinned in `pyproject.toml`) talking to the pinned `qdrant/qdrant:v1.13.4` server silently
+deserializes any `with_vectors=...` response as all-zero arrays (search itself is unaffected;
+only asking the client to hand back stored vector *values* is broken). The off-topic guardrail's
+corpus-centroid computation was the only code path that did this, so it was silently computing a
+zero-vector centroid — making every query register as maximally off-topic and get refused,
+regardless of content. Since this same client/server pairing runs in the actual deployment, this
+was a live bug, not just a benchmark artifact. Fixed in both `api/main.py` and
+`benchmark/latency_benchmark.py` by re-embedding sampled chunk *text* locally instead of asking
+Qdrant to return stored vectors (payloads are unaffected by the bug) — verified directly
+(centroid norm went from `0.0` to a real unit-normalized `1.0`) before re-running the numbers
 above.
 
-</details>
-
----
-
-## Guardrails — four layers, each with a real threshold
-
-| guardrail | mechanism | threshold | evidence |
-|---|---|---|---|
-| **Unsafe input** | regex pre-filter (`guardrails/safety.py`): self-harm, violence-instruction, CSAE patterns — deliberately narrow, not a substitute for the provider's own trained classifier (Gemini `finishReason`, Claude `stop_reason=="refusal"`, both wired) | 3 hand-authored categories | `tests/test_safety.py` |
-| **Off-topic** | cosine similarity of query embedding to the indexed corpus's centroid (`guardrails/off_topic.py::OffTopicGate`) | similarity < **0.35** → refuse | `tests/test_off_topic.py` |
-| **Low retrieval confidence** | top rerank score, same gate | score < **0.2** → refuse | `guardrails/off_topic.py::should_refuse` |
-| **Hallucination / ungrounded claims** | per-claim NLI entailment, `MoritzLaurer/mDeBERTa-v3-base-mnli-xnli` — a claim is grounded if **any** cited chunk entails it | entailment < **0.5** → claim dropped; zero surviving claims → refuse entirely | `tests/test_ml_integration.py`, `tests/test_harness.py` |
-
-Two more thresholds decide the *shape* of an answer, not whether to refuse: rerank score
-**≥ 0.85** skips the LLM entirely (extractive, verbatim from the top passage); between 0.2 and
-0.85 goes to generation. All four numbers above are read directly from
-`src/voice_rag/generation/harness.py` and `src/voice_rag/guardrails/off_topic.py` — not
-approximated.
-
-**A real, verified coverage gap, not glossed over:** the NLI grounding model was fine-tuned on
-XNLI, which covers 15 languages — of MSMARCO-XI's 14, only **Hindi and Urdu** are among them
-(checked against XNLI's own language list). The other 12, including this deployment's default
-language for everything except Hindi, rely on mDeBERTa-v3's zero-shot cross-lingual transfer
-from CC100 pretraining — real, but a weaker guarantee than direct fine-tuning. Flagged in
-`guardrails/grounding.py`'s own module docstring, not discovered after the fact.
-
-**Verified end-to-end, not just unit-tested:** a real query against a real indexed collection
-correctly refused (`mode="refused"`) when no relevant passage existed, and correctly answered
-with cited evidence and 0.995 confidence (`mode="extractive"`) when a near-exact match existed
-— both paths exercised through the actual running FastAPI server, not mocked.
-
----
-
-## Chunking — profiled before choosing, not assumed
-
-`src/voice_rag/chunking/`. The strategy set was chosen *after* profiling the real dataset
-(`src/voice_rag/ingestion/analyze.py`):
-
-| strategy | what it does | where |
-|---|---|---|
-| **sentence-aware (default)** | script-aware sentence splitting (Devanagari danda, Urdu/Arabic full stop, Latin punctuation), window packed to respect sentence boundaries | `chunker.py::_pack_sentences`, `sentence_split.py` |
-| **fixed-token fallback** | 256-token windows, 64-token overlap — used only for the long-tail passages that exceed the ceiling | `chunker.py::_fixed_token_windows` |
-| **metadata-aware** | every chunk carries language, source-passage lineage, and `is_selected` eval labels | `chunker.py::Chunk` |
-| **hierarchical (schema-ready)** | `level`/`parent_id` fields present on every chunk; verified **inert on this dataset specifically** — MSMARCO-XI has no document hierarchy — activates automatically once pointed at structured long-form documents | `chunker.py::Chunk` |
-| **query-aware granularity** | classifies incoming queries narrow / broad / ambiguous (token count + digit/numeral detection) and adapts retrieval depth | `query_processing/granularity.py` |
-
-**Why not naive fixed-size everywhere:** profiling the real Hindi corpus found **951,816 of
-953,388 passages (99.8%)** need no splitting at all — they're already short, atomic units
-(p50 = 55 translated words). A single aggressive fixed-size splitter would have actively
-fragmented already-correct retrieval units. The default is therefore adaptive: whole-passage
-first, sentence-aware second, fixed-token only as a last resort.
-
----
-
-## The corpus
-
-[`ai4bharat/MSMARCO-XI`](https://huggingface.co/datasets/ai4bharat/MSMARCO-XI) — a
-professionally-translated MSMARCO into 14 Indic languages, parallel by `query_id`. Five
-languages were profiled (`reports/dataset_analysis/`) before committing to Hindi as the
-built, indexed, and served language:
-
-| language | script consistency | train rows | validation queries |
-|---|---:|---:|---:|
-| Hindi (built + indexed) | 99.96% | 778,638 | 97,941 |
-| Tamil | 99.98% | 778,638 | 97,941 |
-| Sanskrit | 99.89% | 778,638 | 97,941 |
-| Telugu | 99.94% | **no train split in the dataset** | 97,941 |
-| Urdu | 99.97% | 770,089 | 97,941 |
-
-Script consistency = fraction of non-empty translated passages actually containing the
-expected Unicode block for that language — a real check for translation leakage (e.g. Latin
-text where Devanagari was expected), not assumed clean. Telugu's missing train split is a
-dataset fact this profiling caught, not a bug in this repo.
-
-On the built Hindi validation split: **97,941 queries**, 199,643 passage slots, 9.98 passages
-per query on average, passage length p50 = 55 words / p99 = 139 words, **0% empty translated
-queries or passages**. `is_selected` labels (needed for extractive/reranking eval) exist for
-only 11,086 of 20,000 sampled queries — the other 44.6% have zero relevant passage in their
-candidate pool at all, which is the same underlying dataset property behind the high refusal
-rate in the end-to-end benchmark above.
-
----
-
-## Generation harness — structured orchestration, not prompt-in/text-out
-
-`src/voice_rag/generation/harness.py` (`GenerationHarness.answer`) is not a single LLM call —
-it's a typed pipeline: unsafe-input check → off-topic/confidence gate → extractive/generative
-router → (extractive: template fill, zero LLM cost) → (generative: structured-output call →
-per-claim NLI check) → typed `AnswerResponse`.
-
-- **Structured I/O throughout** — every stage passes typed Pydantic models
-  (`generation/schemas.py`), never raw strings between stages. The LLM's own output is
-  constrained via the provider's structured-output feature (Gemini `responseSchema`, Claude
-  `output_config.format`), not parsed out of free text.
-- **Retries with real backoff** — `generation/gemini_service.py::_post_with_retries`
-  exponentially backs off on 429/5xx/network errors, fails fast on 4xx —
-  tested with a mock transport (`tests/test_gemini_retry.py`).
-- **Fallback, not a crash** — a declined or failed generation call surfaces as
-  `mode="refused"`, `guardrail_flags=["generation_declined"]`, same shape as a low-confidence
-  retrieval refusal.
-- **Two interchangeable backends** — `AnthropicGenerationService` and `GeminiGenerationService`
-  implement the identical interface. Gemini is the default (`VOICE_RAG_GENERATION_BACKEND`);
-  Claude is code-verified correct but was actually swapped in during development when the
-  Anthropic account hit a billing block — the harness didn't need to know or care.
-
----
-
-## Honestly incomplete
-
-- **Full-corpus indexing.** The Hindi validation split is 964,603 chunks and is not claimed as
-  complete until the deployment's versioned state manifest and exact Qdrant point count agree.
-  `scripts/build_full_index.py` checkpoints each committed Qdrant+BM25 batch atomically, so a
-  stopped Pod resumes rather than re-embedding completed batches. During bulk upload it defers
-  Qdrant's dense/sparse index optimization and enables the normal search indexes only after all
-  vectors arrive. The latency numbers above are measured on substantial real subsets, not a
-  finished full-corpus RunPod measurement; benchmark the completed final hardware deployment
-  before reporting final submission values.
-- **Voice is wired, but not streaming.** `POST /v1/voice-query` is real, tested, and live —
-  record, upload as one multipart request, transcribe, answer. What's *not* built is a
-  streaming WebSocket with partial-transcript speculative retrieval; today's voice path is
-  record-then-submit, not continuous.
-- **Guardrail ordering** (see the architecture note above) — the safety/scope checks run inside
-  the harness, which today is called *after* embedding + retrieval + rerank, not before. They
-  still gate the LLM call correctly; they don't yet save retrieval cost on an unsafe query.
-- **Web3 provenance anchoring** was deliberately scoped out — an audit/trust feature for corpus
-  integrity, not a requirement in this task brief.
-
-Six real bugs were found and fixed while building this: a query-injection crash, a library
-version incompatibility, a concurrent-storage-access bug, a UTF-8 testing artifact, a plaintext
-API-key logging issue, and the 5–10× Qdrant local-mode latency artifact documented above.
-
----
-
-## Stack
-
-| layer | choice | why |
-|---|---|---|
-| STT | Sarvam Saaras v3 | Indic-specialist, native Hindi/English code-switching — matches the data |
-| Embeddings | `BAAI/bge-m3` | one model produces both the dense and sparse vector, no second pass |
-| Vector DB | Qdrant (real server, not embedded mode) | verified 10–70× faster sparse search than embedded local mode at this scale |
-| Lexical | Tantivy (BM25) | in-process, no network hop, ~2 ms p50 |
-| Fusion | RRF, k=60 | scale-free — BM25 and cosine scores aren't directly comparable |
-| Rerank | `BAAI/bge-reranker-v2-m3` | multilingual cross-encoder, top-8 candidates |
-| Grounding | `mDeBERTa-v3-base-mnli-xnli` | per-claim NLI entailment, not one opaque groundedness score |
-| Generation | Gemini (default) / Claude — same interface | swappable at the harness boundary, proven by actually swapping mid-project |
-| Host | Docker on RunPod (RTX 4090) | single-Pod design — Qdrant on private `127.0.0.1:6333`, FastAPI serves the built frontend on `8000` |
-
----
-
-## Layout
+## Repository layout
 
 ```
 src/voice_rag/
-├── ingestion/            # dataset loading, normalization, dedup
-├── chunking/              # multi-strategy chunker + query granularity classifier
-├── embeddings/             # bge-m3 serving
-├── retrieval/               # dense + sparse (Qdrant), BM25 (Tantivy), RRF fusion
-├── reranking/                 # bge-reranker-v2-m3
-├── stt/                        # Sarvam STT client
-├── generation/                  # harness, schemas, Gemini/Claude backends
-├── guardrails/                    # safety, off-topic, grounding
-└── apps/api_gateway/                # FastAPI app (/v1/query, /v1/voice-query, /v1/health)
-frontend/                              # React 18 + TS + Tailwind + Framer Motion (Vite build)
+  settings.py            # Central env-var settings (SARVAM_API_KEY, GEMINI_API_KEY)
+  pipeline/
+    ingestion/            # MSMARCO-XI schema, HF source access, corpus dedup, dataset analysis
+    chunking/              # Adaptive chunking strategies (above)
+    embeddings/            # BGE-M3 dense + learned-sparse embedding service
+    retrieval/              # Qdrant dense/sparse index, Tantivy BM25, RRF fusion
+    reranking/              # BGE cross-encoder reranker
+    guardrails/             # Safety pre-filter, off-topic gate, NLI grounding
+    generation/             # Gemini adapter, typed schemas, the harness
+    stt/                    # Sarvam speech-to-text client
+  api/
+    main.py                # FastAPI app: lifespan, routes, readiness, SPA mount
+    rate_limit.py           # In-memory per-IP sliding-window rate limit (20 req/60s/worker)
+scripts/                  # Persistent resumable full-index builder, small smoke-index helper
+evaluation/                # Closed-world retrieval metrics (Recall@K, MRR, NDCG) + subset eval
+benchmark/                 # Latency benchmark (above) + live voice HTTP benchmark
+frontend/                  # React 18 + TypeScript + Vite SPA ("ClearAsk")
+infrastructure/            # RunPod and Cloud Run container entrypoints
 ```
 
-## Run it
+## Running locally
 
 ```powershell
-uv venv --python 3.11 .venv
-uv sync
-cp .env.example .env                              # SARVAM_API_KEY, GEMINI_API_KEY
+# Backend
+uv sync --frozen
+cp .env.example .env   # fill in SARVAM_API_KEY, GEMINI_API_KEY
+uv run python -m voice_rag.pipeline.ingestion.build_corpus --languages hi --split validation
+uv run python -m voice_rag.pipeline.chunking.build_chunks --languages hi --split validation
+uv run python scripts/build_full_index.py --language hi --split validation \
+    --qdrant-url http://localhost:6333 --index-version full1
+uv run uvicorn voice_rag.api.main:app --port 8000
 
-uv run pytest                                      # 91 fast unit tests, ~10s
-uv run uvicorn voice_rag.apps.api_gateway.main:app --port 8000
+# Frontend
+cd frontend
+npm ci
+npm run dev   # proxies /v1 to http://localhost:8000
 ```
+
+Or `docker compose up` for the two-service (Qdrant + app) local topology.
+
+## Deployment
+
+The production container bakes Qdrant into the same image as the app (`Dockerfile.cloudrun`) so
+there's a single deployable unit with no separate vector-database service to provision. The
+Hindi `full1` index (964,603 chunks) is built once and baked into the image at build time, so
+the deployed container starts serving immediately rather than re-indexing on boot.
+`RUNPOD.md`-era tooling (`Dockerfile`, `infrastructure/runpod-entrypoint.sh`) exists purely as
+the GPU environment used to *build* that index — it is not the deployment target.
+
+## Tests
 
 ```powershell
-uv run python -m benchmark.latency_benchmark --qdrant-url http://localhost:6333
-uv run python -m benchmark.voice_e2e_benchmark --audio-dir data/benchmark_audio --api-url http://localhost:8000
+uv run pytest -q   # 93 passed, 7 deselected (slow/GPU/provider tests) as of 2026-08-16
+uv run pytest -m slow tests/test_ml_integration.py tests/test_gemini_integration.py tests/test_sarvam_integration.py
 ```
 
-## Deploy it
+Default suite is fast unit/component coverage; slow tests load real ML models or call paid
+providers and are opt-in only.
 
-```powershell
-docker compose up -d qdrant
-uv run python scripts/build_full_index.py --language hi --split validation --qdrant-url http://localhost:6333 --index-version full1
-docker compose up --build app
-```
+## Known limitations
 
-`RUNPOD.md` covers the single-Pod path this repo actually ships as: GitHub Actions publishes
-`ghcr.io/ridreb05/voice-rag:runpod` on every push to `master`
-([workflow](.github/workflows/container.yml)); a Pod with an RTX 4090 pulls that image, bootstraps
-the index on first boot, and serves the built frontend directly from FastAPI. Bootstrap uses a
-persistent, versioned checkpoint and `/v1/health` rejects partial index artifacts. No public URL
-is kept running between test sessions — see `DEPLOYMENT.md` for the exact pre-flight checklist.
+Stated plainly rather than glossed over:
 
-<p align="center">
-  <img src="https://capsule-render.vercel.app/api?type=waving&color=0:f59e0b,50:7c4a0e,100:1a0e0a&height=110&section=footer" />
-</p>
+- MSMARCO-XI covers 14 Indic languages; one running API process serves one configured language
+  collection at a time. Request-level `language` labels the response but doesn't switch indexes.
+- Guardrails run after retrieval and reranking, so they can prevent an unsafe *answer* but don't
+  avoid retrieval cost for an unsafe query that passes the pre-filter.
+- There's no full `TestClient` coverage of `/v1/query` or `/v1/voice-query` — passing the
+  default fast unit-test suite alone is not live end-to-end proof.
+- End-to-end latency meets the <200ms target at P50/P70 on the real deployed index, but not at
+  P95 and beyond (see Latency above) — the remainder is queries routed to a real Gemini call,
+  and no code change makes a real network LLM round-trip fit under 200ms.

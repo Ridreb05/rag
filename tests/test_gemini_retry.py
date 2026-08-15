@@ -5,7 +5,7 @@ the default fast suite (unlike test_gemini_integration.py)."""
 import httpx
 import pytest
 
-from voice_rag.generation.gemini_service import GeminiGenerationService
+from voice_rag.pipeline.generation.gemini_service import GeminiGenerationService
 
 VALID_BODY = {
     "candidates": [

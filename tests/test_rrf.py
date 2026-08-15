@@ -1,4 +1,4 @@
-from voice_rag.retrieval.fusion.rrf import reciprocal_rank_fusion
+from voice_rag.pipeline.retrieval.fusion.rrf import reciprocal_rank_fusion
 
 
 def test_single_list_preserves_order():

@@ -12,7 +12,7 @@ pytestmark = pytest.mark.slow
 
 
 def test_bge_m3_cross_lingual_similarity_exceeds_unrelated_pair():
-    from voice_rag.embeddings.service import EmbeddingService
+    from voice_rag.pipeline.embeddings.service import EmbeddingService
 
     svc = EmbeddingService()
     result = svc.embed(["what is diabetes", "capital of france", "मधुमेह क्या है"])
@@ -30,7 +30,7 @@ def test_bge_m3_cross_lingual_similarity_exceeds_unrelated_pair():
 
 
 def test_reranker_scores_relevant_passage_higher():
-    from voice_rag.reranking.service import RerankerService
+    from voice_rag.pipeline.reranking.service import RerankerService
 
     svc = RerankerService()
     scores = svc.rerank(
@@ -46,7 +46,7 @@ def test_reranker_scores_relevant_passage_higher():
 
 
 def test_grounding_validator_distinguishes_entailment_from_contradiction():
-    from voice_rag.guardrails.grounding import GroundingValidator
+    from voice_rag.pipeline.guardrails.grounding import GroundingValidator
 
     v = GroundingValidator()
     evidence = ["Diabetes is a chronic disease that affects how the body processes blood sugar."]
@@ -60,7 +60,7 @@ def test_grounding_validator_distinguishes_entailment_from_contradiction():
 
 
 def test_grounding_validator_detects_contradiction():
-    from voice_rag.guardrails.grounding import GroundingValidator
+    from voice_rag.pipeline.guardrails.grounding import GroundingValidator
 
     v = GroundingValidator()
     score = v.detect_contradiction("The Eiffel Tower is in Paris.", "The Eiffel Tower is in London.")
@@ -68,7 +68,7 @@ def test_grounding_validator_detects_contradiction():
 
 
 def test_grounding_validator_works_cross_lingually_for_hindi():
-    from voice_rag.guardrails.grounding import GroundingValidator
+    from voice_rag.pipeline.guardrails.grounding import GroundingValidator
 
     v = GroundingValidator()
     result = v.validate_claim(

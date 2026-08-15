@@ -6,7 +6,7 @@ still run in the default fast suite.
 import pytest
 
 from voice_rag.settings import settings
-from voice_rag.stt.sarvam_client import _api_key
+from voice_rag.pipeline.stt.sarvam_client import _api_key
 
 
 def test_api_key_guard_raises_clear_error_when_missing(monkeypatch):

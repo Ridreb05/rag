@@ -15,8 +15,8 @@ requires_gemini_key = pytest.mark.skipif(not settings.gemini_api_key, reason="GE
 
 @requires_gemini_key
 def test_generate_grounds_answer_and_cites_correct_chunk():
-    from voice_rag.generation.gemini_service import GeminiGenerationService
-    from voice_rag.generation.schemas import GenerationRequest, RetrievalCandidate
+    from voice_rag.pipeline.generation.gemini_service import GeminiGenerationService
+    from voice_rag.pipeline.generation.schemas import GenerationRequest, RetrievalCandidate
 
     svc = GeminiGenerationService()
     req = GenerationRequest(

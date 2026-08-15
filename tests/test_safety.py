@@ -1,4 +1,4 @@
-from voice_rag.guardrails.safety import check_unsafe_input
+from voice_rag.pipeline.guardrails.safety import check_unsafe_input
 
 
 def test_flags_self_harm_phrasing():

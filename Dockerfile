@@ -39,7 +39,7 @@ RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev
 
 # Catch Linux-only torch / Transformers import failures in CI before an image
 # is published and deployed to a paid GPU Pod.
-RUN PYTHONPATH=/app/src /app/.venv/bin/python -c "from voice_rag.apps.api_gateway.main import app; print(app.title)"
+RUN PYTHONPATH=/app/src /app/.venv/bin/python -c "from voice_rag.api.main import app; print(app.title)"
 
 ENV PYTHONPATH=/app/src
 ENV PYTHONUNBUFFERED=1

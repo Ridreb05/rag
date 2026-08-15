@@ -1,6 +1,6 @@
 import json
 
-from voice_rag.apps.api_gateway import main
+from voice_rag.api import main
 
 
 def test_completed_index_state_requires_manifest_completion(monkeypatch, tmp_path):

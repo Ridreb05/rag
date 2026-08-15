@@ -1,10 +1,13 @@
-# Production topology (docs/08-repo-and-stack.md): a real Qdrant server,
-# not the embedded local mode used for local dev/testing. Verified directly
-# (docs/evaluation-results.md) that local mode's SQLite-backed storage is
-# NOT the same on-disk format as the server — you cannot copy
-# data/full_index/qdrant into qdrant_storage below. Populate it by running
-# scripts/build_full_index.py --qdrant-url http://localhost:6333 against
-# this running stack instead (see docs/runpod-deployment.md).
+# Production topology: a real Qdrant server, not the embedded local mode
+# used for local dev/testing. Local mode's SQLite-backed storage is NOT the
+# same on-disk format as the server — you cannot copy
+# data/full_index/qdrant into cloudrun-data/qdrant below.
+#
+# cloudrun-data/ is the real, complete index (964,603 Hindi validation
+# chunks, index version full1) — the same artifact baked into
+# Dockerfile.cloudrun for deployment. This is the main index: mounted
+# directly rather than duplicated, so local Compose and the deployed
+# container serve identical data.
 
 services:
   qdrant:
@@ -14,7 +17,7 @@ services:
       # over Docker's private network; the host can still run index tooling.
       - "127.0.0.1:6333:6333"
     volumes:
-      - qdrant_storage:/qdrant/storage
+      - ./cloudrun-data/qdrant:/qdrant/storage
     restart: unless-stopped
 
   app:
@@ -24,14 +27,13 @@ services:
     environment:
       - VOICE_RAG_MANAGED_QDRANT=0
       - QDRANT_URL=http://qdrant:6333
-      - BM25_PATH=/app/data/full_index/bm25/hi_validation
+      - BM25_PATH=/app/cloudrun-data/bm25
       - VOICE_RAG_LANGUAGE=hi
       - VOICE_RAG_INDEX_VERSION=full1
-      - VOICE_RAG_GENERATION_BACKEND=gemini
     env_file:
-      - .env  # SARVAM_API_KEY / ANTHROPIC_API_KEY / GEMINI_API_KEY — never baked into the image
+      - .env  # SARVAM_API_KEY / GEMINI_API_KEY — never baked into the image
     volumes:
-      - ./data/full_index/bm25:/app/data/full_index/bm25  # portable Tantivy index, safe to mount directly
+      - ./cloudrun-data/bm25:/app/cloudrun-data/bm25  # portable Tantivy index, safe to mount directly
     depends_on:
       - qdrant
     restart: unless-stopped
@@ -42,6 +44,3 @@ services:
             - driver: nvidia
               count: 1
               capabilities: [gpu]
-
-volumes:
-  qdrant_storage:

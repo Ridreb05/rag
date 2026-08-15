@@ -1,4 +1,4 @@
-from voice_rag.retrieval.dense.index import (
+from voice_rag.pipeline.retrieval.dense.index import (
     DEFAULT_HNSW_M,
     DEFAULT_INDEXING_THRESHOLD_KB,
     enable_dense_hnsw,

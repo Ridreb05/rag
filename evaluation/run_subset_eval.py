@@ -29,11 +29,11 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 
-from voice_rag.embeddings.service import EmbeddingService
-from voice_rag.reranking.service import RerankerService
-from voice_rag.retrieval.dense.index import IndexedChunk, collection_name, ensure_collection, get_client, upsert_chunks
-from voice_rag.retrieval.fusion.rrf import reciprocal_rank_fusion
-from voice_rag.retrieval.sparse.bm25_index import Bm25Index
+from voice_rag.pipeline.embeddings.service import EmbeddingService
+from voice_rag.pipeline.reranking.service import RerankerService
+from voice_rag.pipeline.retrieval.dense.index import IndexedChunk, collection_name, ensure_collection, get_client, upsert_chunks
+from voice_rag.pipeline.retrieval.fusion.rrf import reciprocal_rank_fusion
+from voice_rag.pipeline.retrieval.sparse.bm25_index import Bm25Index
 from evaluation.retrieval_metrics import aggregate, hit_rate_at_k, ndcg_at_k, reciprocal_rank, recall_at_k
 
 logger = logging.getLogger(__name__)
