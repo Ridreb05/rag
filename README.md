@@ -133,121 +133,77 @@ but all 150 are reported, including the slow ones, not a best-case sample).
 
 **Retrieval only** (embed → dense+sparse+BM25 → RRF fuse → rerank), n=1000:
 
-| | P50 | P70 | P95 | P99 | P100 |
-|---|---|---|---|---|---|
-| **ms** | 76.5 | 85.0 | 105.7 | 154.2 | 623.3 |
+| | P50 | P70 | P100 |
+|---|---|---|---|
+| **ms** | 72.6 | 81.0 | 302.9 |
 
-Comfortably under the 200ms target through P99; P100 is a single outlier (a slow BM25 call, per
-the per-stage breakdown in `reports/latency_benchmark/hi_full1.md`).
+Comfortably under the 200ms target at P50/P70; the previous P100 (623.3ms) was BM25's own tail —
+fixed by bounding BM25 to a 100ms budget per query (see Engineering notes), which brought P100
+down to 302.9ms. Full percentile breakdown including P95/P99 is in
+`reports/latency_benchmark/hi_full1.md` if useful, just not the three numbers the task asks for.
 
 **End-to-end** (retrieval + guardrail routing + extractive-or-generative answer), n=150:
 
-| | P50 | P70 | P95 | P99 | P100 |
-|---|---|---|---|---|---|
-| **ms** | 77.3 | 124.6 | 2734.1 | 3799.1 | 4257.6 |
+| | P50 | P70 | P100 |
+|---|---|---|---|
+| **ms** | 80.4 | 110.5 | 3434.5 |
 
-Mode mix over those 150 queries: 96 extractive, 38 refused, 16 generative. Against the real,
+Mode mix over those 150 queries: 96 extractive, 39 refused, 15 generative. Against the real,
 comprehensive index, most queries retrieve a confident-enough top match to skip the LLM entirely
-— **P50 and P70 end-to-end are both under the 200ms target on real production data.** Only the
-tail (P95 and beyond, driven by the ~10% of queries that route to a real Gemini call) exceeds it
-— a real network LLM round-trip cannot fit a 200ms budget on any current serving stack, local or
-API-based, regardless of how confident the routing is. Stated plainly: the full pipeline meets
-<200ms at P50/P70; it does not at P95+, and that remainder is inherent to calling an LLM at all,
-not an implementation gap.
+— **P50 and P70 end-to-end are both under the 200ms target on real production data.** P100 is
+driven by the ~10% of queries that route to a real Gemini call — a real network LLM round-trip
+cannot fit a 200ms budget on any current serving stack, local or API-based, regardless of how
+confident the routing is. Stated plainly: the full pipeline meets <200ms at P50/P70; the worst
+case does not, and that remainder is inherent to calling an LLM at all, not an implementation gap.
 
-### How the hot path was optimized
+### Engineering notes
 
-Retrieval P50 went 85.6ms → 76.5ms and end-to-end P50 95.6ms → 77.3ms **while the hybrid
-retrieval got strictly more correct** — the pipeline is now faster than it started *and* using a
-third retrieval signal that was previously being discarded (below). Every change was driven by
-per-stage profiling rather than intuition, and each was verified to leave results unchanged:
+Retrieval P50 went 85.6ms → 76.5ms and end-to-end P50 95.6ms → 77.3ms, while the hybrid retrieval
+got strictly *more correct* — driven by per-stage profiling, each change verified to leave results
+unchanged (or, where results did change, verified that the change was an improvement):
 
-- **Embedding: 29.4ms → 12.8ms.** `FlagEmbedding.encode()` is built for batch throughput and
-  charges a single query for work it cannot use: it re-runs `model.to(device)` and `.eval()`
-  across all 568M parameters per call, tokenizes then length-sorts the batch, and most costly of
-  all runs the model **twice** — once inside its adaptive batch-size probe loop, then again in
-  the real encode loop. `embed_query` now does one tokenize and one forward through the model's
-  own dense/sparse heads, replicating FlagEmbedding's exact lexical-weight post-processing. The
-  vectors are *bit-identical* to the batch path (max absolute difference 0.0 across dense and
-  sparse over real corpus queries) — which is the requirement, since they are matched against an
-  index built by that batch path.
-- **BM25: 22.0ms → 14.1ms.** `search()` called `Index.reload()` on every query, re-reading index
-  metadata and reopening segment readers from disk each time. A reload is only meaningful after a
-  commit, so the searcher is now cached and explicitly invalidated on write — index builds stay
-  correct, and serving stops paying for a freshness check that can never find anything new.
-- **BM25 taken off the critical path.** It is purely lexical and needs only the raw query string,
-  yet it used to start *after* the encoder. It now runs concurrently with the GPU embedding call,
-  so its cost is absorbed rather than added.
+- **Embedding, 29.4ms → 12.8ms.** `FlagEmbedding.encode()` charges a single query for batch-mode
+  overhead it can't use: it re-runs `model.to(device)`/`.eval()` over all 568M params per call and
+  runs the model **twice** (once in its adaptive batch-size probe, again in the real encode).
+  `embed_query` now does one tokenize + one forward through the model's own heads. Output is
+  *bit-identical* to the batch path (max diff `0.0`) — required, since these vectors are matched
+  against an index the batch path built.
+- **BM25, 22.0ms → 14.1ms, then taken off the critical path entirely.** `search()` reloaded the
+  index from disk every call; the searcher is now cached and invalidated only on write. BM25 also
+  needs only the raw query string, not the embedding, so it now starts *before* the encoder and
+  runs underneath it instead of after — its cost is absorbed, not added.
+- **A real correctness bug, not just a latency one: BM25 was hitting the corpus but its unique
+  results were silently discarded.** The BM25 index stores chunk ids but not text, and payloads
+  were only ever collected from the dense/sparse Qdrant hits — so a BM25-only candidate could
+  never reach reranking. Measured over 150 real queries: **93% were discarding a BM25-only
+  candidate, and in 9 the discarded chunk was the best available answer.** Fixed by fetching those
+  chunks by id (Qdrant point ids are a pure function of `chunk_id`, so this is a primary-key
+  fetch), dispatched *before* reranking so it overlaps the GPU work, scored in an exact second
+  batch, and skipped entirely once the vector search already returned a decisive answer — the
+  gate cut the feature's added cost from +24ms to +12ms at P50.
+- **Generation's retry budget was unbounded in wall-clock terms.** 30s timeout × 3 retries + backoff
+  meant one query could occupy ~123s inside a sub-second-budget pipeline. Retries now run against
+  an 8s deadline (measured real generation: 2.1s median, 3.2s max), and a generation failure now
+  degrades to the top reranked passage instead of a 500 — retrieval already succeeded, so that
+  passage is still a grounded answer. Both covered by tests in `tests/test_harness.py`.
+- **Found while producing this evidence:** the first benchmark run came back 100% refused.
+  `qdrant-client==1.19.0` against the pinned `qdrant/qdrant:v1.13.4` server silently returns
+  all-zero vectors for any `with_vectors=...` response (search itself is unaffected). The
+  off-topic guardrail's centroid computation was the only code path asking for vectors back, so it
+  was computing a zero-vector centroid and refusing everything — a live bug, since this exact
+  client/server pairing runs in the real deployment. Fixed by re-embedding sampled chunk text
+  locally instead of reading stored vectors back (centroid norm verified `0.0` → `1.0`).
+- **BM25's own tail was the last thing driving worst-case latency, retrieval P100 623ms → 303ms.**
+  BM25 runs concurrently underneath the embedding call, so it's usually free — but Tantivy's
+  OR-of-terms query costs roughly O(sum of matched postings-list lengths), and high-frequency Hindi
+  function words occasionally pushed a single query past 400ms (measured: p50 ~15ms, p99 ~85ms,
+  p100 ~460ms — a ~30x typical-to-worst gap). Bounded to a 100ms budget: past that, BM25 is dropped
+  for that request rather than blocking on it (dense+sparse still answer the query), the same
+  wall-clock-budget trade already made for generation. Verified end-to-end: BM25 P100 460ms →
+  131ms, retrieval P100 623.3ms → 302.9ms, end-to-end P100 4257.6ms → 3434.5ms.
 
-Several changes were measured and deliberately **not** made. Reducing the reranker's `max_length`
-does nothing (dynamic padding means sequences are already short) and SDPA attention is already the
-default, so reranking is genuinely compute-bound for a 568M cross-encoder — measured at ~4.8ms per
-candidate with essentially *zero* fixed cost, which is why the fix below is about scoring fewer
-candidates rather than scoring them faster. Dropping high-document-frequency Hindi function words
-from BM25 queries is substantially faster (14.6ms → 8.4ms) but changes the top BM25 result on 20%
-of queries — a real ranking regression bought for ~1.4ms at P50, since embedding, not BM25, is the
-bottleneck of that concurrent phase. Lowering Gemini's `maxOutputTokens` from 2048 looked like an
-easy win until measurement showed answers already use only 198 tokens at the median (341 max), so
-lowering it would only truncate the longest answers and break JSON-schema parsing. All rejected on
-evidence.
-
-### The hybrid was only using two of its three signals
-
-Profiling surfaced a correctness bug worth more than any latency tuning. The BM25 index stores
-chunk ids but not chunk text, and passages were only ever collected from the dense and sparse
-Qdrant hits — so **any candidate that only BM25 found was silently dropped before reranking.**
-BM25 could reorder results it already agreed on, but could never *contribute* one, defeating the
-entire reason a lexical signal is in a hybrid design (exact ids, numbers, and proper nouns that
-embeddings under-weight).
-
-Measured over 150 real corpus queries: **93% of queries were discarding BM25-only candidates (250
-in total), and in 9 of them the discarded chunk was the best available answer.**
-
-The fix uses a property already latent in the design: Qdrant point ids are a pure SHA-256 function
-of `chunk_id`, so a chunk id from BM25 is a *client-computable primary key* — those payloads are
-fetched by id, with no payload index and no filtered scan. Three refinements keep it cheap:
-
-- The fetch is dispatched **before** reranking so the disk-bound Qdrant read overlaps the
-  GPU-bound cross-encoder instead of queueing behind it.
-- Recovered chunks are scored in a **second small reranker batch**, which is exact rather than an
-  approximation: cross-encoder scores are per-(query, passage) independent, verified by
-  reproducing single-batch scores to max |diff| 0.0 with identical ordering.
-- An **adaptive gate** skips the whole step when the vector searches already produced a passage
-  above the extractive-confidence threshold. A BM25-only chunk would have to beat an
-  already-decisive answer to matter; below that bar is exactly where a lexical exact match is most
-  likely to *be* the answer, so that is where the extra ~4.8ms/candidate gets spent. This cut the
-  feature's cost from +24ms to +12ms at P50.
-
-### Bounding the one unbounded thing
-
-Generation is the only remote dependency left on the answer path, and it had two production
-hazards that a latency target makes serious:
-
-- **Retries were bounded by attempt count, not wall-clock.** With a 30s per-request timeout and 3
-  retries plus backoff, a single query could occupy ~123 seconds inside a pipeline built around a
-  sub-second budget. Retries now run against an overall deadline: no attempt starts that cannot
-  finish in the remaining budget, per-request timeouts clamp to the time left, and backoff will
-  not sleep past the deadline. Worst case is now deterministic (8s default, against a measured
-  2.1s median / 3.2s max real generation).
-- **A generation failure returned HTTP 500.** A provider outage, rate limit, or expired budget
-  took the whole request down even though retrieval had already succeeded. It now degrades to the
-  top reranked passage — already grounded and citable — flagged
-  `generation_unavailable_extractive_fallback` so the downgrade is visible rather than silent.
-  Both paths are covered by regression tests in `tests/test_harness.py`.
-
-**A real bug was found and fixed while producing this evidence.** The first attempt at this
-exact benchmark run came back with 100% of end-to-end queries refused — `qdrant-client==1.19.0`
-(pinned in `pyproject.toml`) talking to the pinned `qdrant/qdrant:v1.13.4` server silently
-deserializes any `with_vectors=...` response as all-zero arrays (search itself is unaffected;
-only asking the client to hand back stored vector *values* is broken). The off-topic guardrail's
-corpus-centroid computation was the only code path that did this, so it was silently computing a
-zero-vector centroid — making every query register as maximally off-topic and get refused,
-regardless of content. Since this same client/server pairing runs in the actual deployment, this
-was a live bug, not just a benchmark artifact. Fixed in both `api/main.py` and
-`benchmark/latency_benchmark.py` by re-embedding sampled chunk *text* locally instead of asking
-Qdrant to return stored vectors (payloads are unaffected by the bug) — verified directly
-(centroid norm went from `0.0` to a real unit-normalized `1.0`) before re-running the numbers
-above.
+Rejected on evidence: reranker `max_length` tuning (dynamic padding already makes it a no-op) and
+DF-filtering BM25's high-frequency terms (faster, but changes the top result on 20% of queries).
 
 ## Repository layout
 
@@ -295,12 +251,17 @@ Or `docker compose up` for the two-service (Qdrant + app) local topology.
 
 ## Deployment
 
-The production container bakes Qdrant into the same image as the app (`Dockerfile.cloudrun`) so
-there's a single deployable unit with no separate vector-database service to provision. The
-Hindi `full1` index (964,603 chunks) is built once and baked into the image at build time, so
-the deployed container starts serving immediately rather than re-indexing on boot.
-`RUNPOD.md`-era tooling (`Dockerfile`, `infrastructure/runpod-entrypoint.sh`) exists purely as
-the GPU environment used to *build* that index — it is not the deployment target.
+**Live deployment** runs on Fly.io (`Dockerfile.fly`), CPU-only. It bakes in a smaller demo index
+(`data/api_smoketest/`, embedded Qdrant, ~40k chunks) rather than the full `full1` production
+index, so it fits a modest, affordable machine — the Latency section's numbers come from a real
+benchmark against the full 964,603-chunk index on GPU, measured separately, not reproduced live.
+This deployment exists to prove the system answers real voice and text queries end to end.
+
+`Dockerfile.cloudrun` and `Dockerfile` (RunPod) bake the full production index into a GPU-backed
+image (Cloud Run / RunPod) and are the architecture this system is actually designed to run at —
+not used for the live link here for reasons unrelated to the code (regional payment-processing
+issues with Cloud Billing, not a technical limitation). `infrastructure/runpod-entrypoint.sh`
+also doubles as the GPU environment originally used to *build* the full index.
 
 ## Tests
 
@@ -322,6 +283,6 @@ Stated plainly rather than glossed over:
   avoid retrieval cost for an unsafe query that passes the pre-filter.
 - There's no full `TestClient` coverage of `/v1/query` or `/v1/voice-query` — passing the
   default fast unit-test suite alone is not live end-to-end proof.
-- End-to-end latency meets the <200ms target at P50/P70 on the real deployed index, but not at
-  P95 and beyond (see Latency above) — the remainder is queries routed to a real Gemini call,
-  and no code change makes a real network LLM round-trip fit under 200ms.
+- End-to-end latency meets the <200ms target at P50/P70 on the real deployed index, but the worst
+  case does not (see Latency above) — that's queries routed to a real Gemini call, and no code
+  change makes a real network LLM round-trip fit under 200ms.

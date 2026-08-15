@@ -37,6 +37,7 @@ cloudrun-data/
 # Local Claude Code project notes — not part of the submission
 CLAUDE.md
 AGENTS.md
+hackathon.md
 # Local Markdown documentation; keep the project README trackable
 *.md
 !README.md

@@ -5,6 +5,7 @@ __pycache__
 *.py[cod]
 .env
 data
+!data/api_smoketest
 reports
 frontend/node_modules
 frontend/dist

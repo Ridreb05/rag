@@ -28,6 +28,7 @@ import logging
 import sys
 import time
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from pathlib import Path
 
 import numpy as np
@@ -50,6 +51,9 @@ from voice_rag.pipeline.retrieval.sparse.bm25_index import Bm25Index
 logger = logging.getLogger(__name__)
 PROCESSED_DIR = Path("data/processed")
 RESULTS_DIR = Path("reports/latency_benchmark")
+# Mirrors api/main.py's BM25_TIMEOUT_SECONDS exactly, so this benchmark
+# measures the pipeline that actually ships, not an unbounded version of it.
+BM25_TIMEOUT_SECONDS = 0.1
 
 PERCENTILES = [50, 70, 95, 99, 100]
 
@@ -123,7 +127,14 @@ def run_benchmark(
         )
         (dense_hits, dense_ms) = dense_f.result()
         (sparse_hits, sparse_ms) = sparse_f.result()
-        (bm25_hits, bm25_ms) = bm25_f.result()
+        try:
+            (bm25_hits, bm25_ms) = bm25_f.result(timeout=BM25_TIMEOUT_SECONDS)
+        except FuturesTimeoutError:
+            # Matches api/main.py: BM25 is dropped for this query rather than
+            # blocking on its tail. bm25_ms reports the timeout budget itself
+            # (not the eventual real completion time) since that budget is
+            # what the shipped pipeline actually waits.
+            bm25_hits, bm25_ms = [], BM25_TIMEOUT_SECONDS * 1000
         wall_ms = (time.perf_counter() - t_wall0) * 1000
         return dense_hits, sparse_hits, bm25_hits, dense_ms, sparse_ms, bm25_ms, wall_ms
 

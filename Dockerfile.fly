@@ -1,0 +1,72 @@
+# syntax=docker/dockerfile:1.7
+#
+# Fly.io variant: CPU-only, no GPU quota/billing dependency. Bakes in the
+# smaller `data/api_smoketest` demo index (embedded Qdrant, SQLite-backed,
+# ~40k chunks, index_version=benchmark) rather than the full 964,603-chunk
+# `full1` production index in cloudrun-data/ — that index alone needs
+# several GB of RAM to serve from a real Qdrant server, which doesn't fit a
+# cheap CPU box. The README's latency numbers come from a real benchmark
+# against the full production index on GPU; this deployment exists to prove
+# the system answers real queries end-to-end, not to reproduce those numbers
+# live. Said plainly rather than left implicit — see README.md's Deployment
+# section.
+#
+# Embedded Qdrant mode also means no separate Qdrant server process to
+# start/manage here (unlike Dockerfile/Dockerfile.cloudrun) — QdrantClient
+# opens the SQLite-backed collection directly in-process.
+
+FROM node:20-slim AS frontend-builder
+WORKDIR /app/frontend
+COPY frontend/package.json frontend/package-lock.json* ./
+RUN npm ci
+COPY frontend/ ./
+RUN npm run build
+
+FROM python:3.11-slim
+
+RUN apt-get update && apt-get install -y --no-install-recommends \
+    curl ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+
+RUN curl -LsSf https://astral.sh/uv/install.sh | sh
+ENV PATH="/root/.local/bin:${PATH}"
+
+WORKDIR /app
+
+COPY pyproject.toml uv.lock ./
+RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --no-install-project
+
+# Swap the GPU-pinned torch wheel (pyproject.toml pins +cu118 for the
+# RunPod/Cloud Run GPU deployments) for a CPU-only build. The +cu118 wheel
+# would still run here — torch.cuda.is_available() already gates every GPU
+# use in this codebase — but it bundles CUDA runtime libraries this host
+# will never use, for no reason other than a much larger image.
+RUN --mount=type=cache,target=/root/.cache/uv \
+    uv pip install --python /app/.venv/bin/python \
+    --index-url https://download.pytorch.org/whl/cpu \
+    --force-reinstall --no-deps "torch==2.6.0"
+
+COPY src/ ./src/
+COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
+
+# The baked-in demo index — see the module docstring above for why this is
+# the smaller embedded-mode index rather than the full production one.
+COPY data/api_smoketest/ ./data/api_smoketest/
+
+RUN PYTHONPATH=/app/src /app/.venv/bin/python -c "from voice_rag.api.main import app; print(app.title)"
+
+ENV PYTHONPATH=/app/src
+ENV PYTHONUNBUFFERED=1
+ENV QDRANT_PATH=/app/data/api_smoketest/qdrant
+ENV BM25_PATH=/app/data/api_smoketest/bm25/hi_validation
+ENV VOICE_RAG_LANGUAGE=hi
+ENV VOICE_RAG_INDEX_VERSION=benchmark
+# Optional grounding model costs real RAM/startup time for marginal benefit
+# on a small demo index sized for a cheap CPU machine; the harness already
+# degrades gracefully without it (guardrails/off_topic + confidence-based
+# refusal stay active either way).
+ENV VOICE_RAG_LOAD_GROUNDING_VALIDATOR=0
+
+EXPOSE 8080
+
+CMD ["/app/.venv/bin/uvicorn", "voice_rag.api.main:app", "--host", "0.0.0.0", "--port", "8080"]

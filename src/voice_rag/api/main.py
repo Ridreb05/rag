@@ -22,6 +22,7 @@ import threading
 import time
 import uuid
 from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as FuturesTimeoutError
 from contextlib import asynccontextmanager
 from pathlib import Path
 
@@ -69,6 +70,19 @@ LOAD_GROUNDING_VALIDATOR = os.environ.get("VOICE_RAG_LOAD_GROUNDING_VALIDATOR", 
 # latency win (measured: K=20->10 roughly halved rerank latency).
 TOP_K_PER_SIGNAL = 8
 RERANK_CANDIDATES = 8
+# Bounds BM25's contribution to the critical path. BM25 runs concurrently
+# underneath the embedding call, so it costs ~0 whenever it finishes first —
+# but Tantivy's OR-of-terms query (chunking/tokenizer's per-term postings
+# union) costs roughly O(sum of matched postings-list lengths), and
+# high-document-frequency Hindi function words occasionally push a single
+# query's postings union into the hundreds of milliseconds (measured: p50
+# ~15ms, p99 ~91-120ms, p100 ~460ms on the full 964,603-chunk index — a
+# ~30x gap between typical and worst case). Past this timeout, BM25 is
+# dropped for that request rather than blocking on it: dense+sparse still
+# cover the query, so this trades a small amount of recall on a rare
+# pathological query for a bounded worst case, the same trade already made
+# for generation's retry budget.
+BM25_TIMEOUT_SECONDS = 0.1
 MAX_AUDIO_BYTES = 15 * 1024 * 1024
 # Sarvam's BCP-47 codes; "or" -> "od-IN" is the one exception to the naive <code>-IN pattern.
 SARVAM_BCP47 = {
@@ -265,7 +279,15 @@ def _answer_query(
     )
     dense_hits = dense_future.result()
     sparse_hits = sparse_future.result()
-    bm25_hits = bm25_future.result()
+    try:
+        bm25_hits = bm25_future.result(timeout=BM25_TIMEOUT_SECONDS)
+    except FuturesTimeoutError:
+        # The search keeps running in its worker thread; its result is just
+        # discarded when it eventually completes. Dense + sparse alone still
+        # answer the query — see BM25_TIMEOUT_SECONDS for why this is a
+        # deliberate trade, not a degraded state to fix.
+        logger.warning("bm25_search_timeout trace_id=%s budget_s=%.2f", trace_id, BM25_TIMEOUT_SECONDS)
+        bm25_hits = []
     timings["retrieval_ms"] = (time.perf_counter() - t0) * 1000
     # Wall time BM25 actually added on top of everything overlapping it —
     # ~0 when it finished under the embedding call, which is the common case.
