@@ -8,7 +8,7 @@ citing exactly which retrieved passages support each claim, and refusing outrigh
 find enough evidence.
 
 - **GitHub repo:** https://github.com/Ridreb05/rag
-- **Live link:** _to be added before submission_
+- **Live link:** https://clearask-voice-rag.fly.dev/
 - **Dataset:** `ai4bharat/MSMARCO-XI`, Hindi (`hi`) validation split, indexed in full — 964,603
   chunks, index version `full1`
 
