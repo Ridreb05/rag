@@ -263,10 +263,16 @@ not used for the live link here for reasons unrelated to the code (regional paym
 issues with Cloud Billing, not a technical limitation). `infrastructure/runpod-entrypoint.sh`
 also doubles as the GPU environment originally used to *build* the full index.
 
+The off-topic centroid gate (see Guardrails) is disabled specifically on this CPU deployment
+(`VOICE_RAG_LOAD_OFF_TOPIC_GATE=0` in `Dockerfile.fly`) — measured directly: building it re-embeds
+a 63-text sample locally, which took 30+ minutes on this account's shared-CPU machines under memory
+pressure. It stays on by default everywhere else (`main.py`'s default is `"1"`); confidence-based
+refusal and every other guardrail remain active here regardless.
+
 ## Tests
 
 ```powershell
-uv run pytest -q   # 93 passed, 7 deselected (slow/GPU/provider tests) as of 2026-08-16
+uv run pytest -q   # 95 passed, 7 deselected (slow/GPU/provider tests) as of 2026-08-16
 uv run pytest -m slow tests/test_ml_integration.py tests/test_gemini_integration.py tests/test_sarvam_integration.py
 ```
 
