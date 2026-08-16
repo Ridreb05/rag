@@ -166,21 +166,32 @@ every number above is checkable rather than asserted: `reports/latency_benchmark
 
 ### What the 200ms covers
 
-The task's target is "chunking + vector DB retrieval + everything through to final output" — this
-system's own work. Every response therefore reports both figures, and the UI shows the request
-measured against the budget rather than leaving the reader to trust a number in this file:
+The task states the pipeline as four stages — `Voice input → Speech-to-text → Chunking/Retrieval
+(vector DB) → Answer generation` — and then sets the target on "chunking + vector DB retrieval +
+everything through to final output". That clause starts the clock at *chunking*, the third stage,
+and runs through to the fourth: voice capture and speech-to-text sit upstream of the window it
+names. So the budget is read as **Chunking/Retrieval → Answer generation**.
+
+That reading is stated rather than assumed, because "everything through to final output" could
+also be read as *everything, STT included*. Rather than bet on one interpretation, every response
+carries the numbers for both, so either standard can be applied to the same response:
 
 - `pipeline_ms` — embedding → dense+sparse+BM25 → RRF fusion → rerank → guardrails → answer. This
   is what `REQUEST_BUDGET_SECONDS` governs and what the tables above measure.
 - `stt_ms` — the Sarvam speech-to-text round trip, on voice queries only. Reported **alongside**
-  rather than inside `pipeline_ms`: it is a call out to a third party's servers, so folding it in
-  would make the figure measure Sarvam's latency as much as this pipeline's. It is not hidden —
-  voice callers see true wall-clock cost as `pipeline_ms + stt_ms`, and `total_ms` still includes
-  it.
+  rather than inside `pipeline_ms`, per the scope above; also a call out to a third party's
+  servers, so folding it in would make the figure measure Sarvam's latency as much as this
+  pipeline's.
+- `total_ms` — `pipeline_ms + stt_ms`. The broad reading, for anyone who wants the whole
+  wall-clock cost of a voice query. Nothing is hidden by the narrower default; the UI shows the
+  STT figure on the result card too.
 
-Chunking is an offline indexing step here, not per-query work: MSMARCO-XI is chunked once when the
-index is built (`pipeline/chunking/`), so no query pays for it. That is a property of the dataset
-being pre-segmented passages, and is stated rather than quietly claimed as a latency win.
+The remaining word in that clause is *chunking*, which the target does place inside the window.
+Here it costs 0ms per query: MSMARCO-XI ships pre-segmented passages, so chunking runs once when
+the index is built (`pipeline/chunking/`) and no query repeats it. That is a real architectural
+property — amortising per-query work into an offline index build — but it is a property of this
+dataset, not a trick this pipeline performs, and is stated that way rather than claimed as a
+latency win.
 
 ### Meeting the deadline — and what it costs
 
