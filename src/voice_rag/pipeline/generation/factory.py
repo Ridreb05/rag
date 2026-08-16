@@ -1,33 +1,37 @@
-"""Picks a generation backend at runtime, so the harness's generator is a
-configuration choice rather than a hardcoded import — the "another
+"""Builds the generation backend, keeping the harness's generator a
+configuration choice rather than a hardcoded import — the task's "another
 model/provider can still be plugged in later" requirement.
 
-Default is `gemini`, unchanged from before this module existed: the CPU Fly
-deployment has no GPU to run a local model on, and this module must not
-silently change what an already-working, already-submitted deployment does.
-The GPU RunPod deployment opts into `vllm` explicitly via its own Dockerfile.
+One backend ships today: a local vLLM server (`vllm`). A remote-API backend
+lived here previously and was removed once local generation was working, for
+one reason worth recording — the remote call was ~2.1s median, almost all of
+it network round trip, which no amount of tuning fits inside a 200ms budget.
+Local generation is what makes the latency target reachable at all, so
+carrying a second backend meant maintaining a path the deployment could never
+actually use.
+
+The seam is deliberately still here. `Generator` in harness.py is a Protocol,
+not a base class, so adding a backend means writing one class with a
+`generate()` method and a `.model` attribute and adding a branch below —
+nothing else in the pipeline changes.
 """
 
 from __future__ import annotations
 
 import os
 
-from voice_rag.pipeline.generation.gemini_service import GeminiGenerationService
 from voice_rag.pipeline.generation.vllm_service import LocalVllmGenerationService
 
-_BACKENDS = ("gemini", "vllm")
+_BACKENDS = ("vllm",)
 
 
 def build_generator(*, total_budget_seconds: float | None = None):
     """`total_budget_seconds` is forwarded when the caller wants a budget
     different from the backend's own default — main.py uses this to give
-    phase-two refinement a longer budget than the in-request path, on
-    whichever backend is configured."""
-    backend = os.environ.get("VOICE_RAG_GENERATION_BACKEND", "gemini").strip().lower()
+    phase-two refinement a longer budget than the in-request path."""
+    backend = os.environ.get("VOICE_RAG_GENERATION_BACKEND", "vllm").strip().lower()
     kwargs = {} if total_budget_seconds is None else {"total_budget_seconds": total_budget_seconds}
 
-    if backend == "gemini":
-        return GeminiGenerationService(**kwargs)
     if backend == "vllm":
         return LocalVllmGenerationService(**kwargs)
     raise ValueError(f"Unknown VOICE_RAG_GENERATION_BACKEND={backend!r}; expected one of {_BACKENDS}")

@@ -31,7 +31,7 @@ services:
       - VOICE_RAG_LANGUAGE=hi
       - VOICE_RAG_INDEX_VERSION=full1
     env_file:
-      - .env  # SARVAM_API_KEY / GEMINI_API_KEY — never baked into the image
+      - .env  # SARVAM_API_KEY — never baked into the image
     volumes:
       - ./cloudrun-data/bm25:/app/cloudrun-data/bm25  # portable Tantivy index, safe to mount directly
     depends_on:

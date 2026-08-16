@@ -1,17 +1,14 @@
-"""Generative path via a local vLLM server — an alternative backend to
-GeminiGenerationService, selected at runtime by
-generation/factory.py:build_generator(). Exposes the same
+"""Generative path via a local vLLM server — the generation backend,
+built by generation/factory.py:build_generator(). Implements the
 `generate(GenerationRequest) -> GeneratedAnswer | None` interface the harness
-expects, so no other part of the pipeline changes to use it.
+expects (see harness.py's `Generator` protocol).
 
-Exists specifically to fit generation inside a latency-sensitive budget:
-Gemini is a real network hop to another company's servers (~2.1s measured
-median), which two-phase answering works around rather than eliminates. A
-model resident in this process's own GPU, given a short prompt and a small
-output cap, can answer in well under a second — small enough that, combined
-with the confidence router already skipping the LLM whenever a single
-passage suffices, generation stops being the thing that decides whether a
-request fits its budget.
+Exists specifically to fit generation inside a latency-sensitive budget. The
+hosted-API backend this replaced measured ~2.1s median, almost entirely
+network round trip to another company's servers — impossible to fit a 200ms
+budget, which is why two-phase answering existed to work around it. A model
+resident on this process's own GPU has no such hop: measured on the
+deployment, generation runs in ~150ms, so it fits inside the request.
 
 Design decisions made for latency, in the order they cost the most:
 
@@ -22,9 +19,9 @@ Design decisions made for latency, in the order they cost the most:
    question — this is a real trade against recall on questions that
    genuinely need to synthesize across more passages, not a free win.
 2. No structured-output schema is requested from the model (contrast
-   gemini_service.py's `responseSchema`). Grammar-constrained decoding has
-   real per-token overhead, and it exists there to let the model tell us
-   which passage supports which claim. That information doesn't need to be
+   a hosted API's structured-output schema). Grammar-constrained decoding
+   has real per-token overhead, and such a schema exists to let the model
+   tell us which passage supports which claim. That information doesn't need to be
    asked for here: since the prompt already contains only the chunks the
    model could possibly be citing, the citation is known before the model
    generates anything. One GeneratedClaim citing every chunk placed in
@@ -71,9 +68,10 @@ SYSTEM_INSTRUCTION = (
 class LocalVllmGenerationService:
     """Talks to a local vLLM OpenAI-compatible server (`vllm serve`) over
     HTTP on localhost. Not a provider SDK, for the same reason
-    gemini_service.py isn't one: one endpoint doesn't justify the dependency,
-    and a raw client keeps retry/timeout/streaming behavior fully visible and
-    testable with httpx.MockTransport rather than hidden in a library."""
+    the STT client isn't one: a single endpoint doesn't justify the
+    dependency, and a raw client keeps retry/timeout/streaming behaviour
+    visible and testable with httpx.MockTransport rather than hidden in a
+    library."""
 
     def __init__(
         self,
@@ -110,10 +108,10 @@ class LocalVllmGenerationService:
         )
         self.max_retries = max_retries
         self.backoff_base_seconds = backoff_base_seconds
-        # Deliberately much smaller than Gemini's 8s default: a local model
-        # failing is not a network blip that clears up on retry, it is the
-        # server still loading or out of memory — a short budget surfaces
-        # that as a fast extractive fallback instead of a slow one.
+        # Deliberately small. A local model failing is not a network blip
+        # that clears up on retry — it is the server still loading or out of
+        # memory, so a short budget surfaces that as a fast extractive
+        # fallback instead of a slow one.
         self.total_budget_seconds = total_budget_seconds
         # Per-attempt HTTP timeout defaults to the whole budget rather than a
         # fixed constant. A fixed 5s here silently capped the refinement
@@ -128,8 +126,8 @@ class LocalVllmGenerationService:
 
     def is_ready(self, timeout: float = 2.0) -> bool:
         """A cheap, short-timeout readiness probe for /v1/health — not called
-        on the request path. Unlike Gemini (a third party's uptime, not
-        this deployment's to report on), a broken local vLLM server means
+        on the request path. Unlike a hosted API (a third party's uptime,
+        not this deployment's to report on), a broken local vLLM server means
         this deployment silently answers every generative-band query
         extractively, which is worth surfacing rather than only discoverable
         by noticing the mode mix looks wrong."""
@@ -141,9 +139,8 @@ class LocalVllmGenerationService:
 
     def _stream_with_retries(self, payload: dict, trace_id: str) -> tuple[str, float, float]:
         """Returns (completion_text, ttft_ms, total_ms). Same retry contract
-        as GeminiGenerationService._post_with_retries: bounded by a wall-clock
-        deadline, not just an attempt count, and only transient failures are
-        retried."""
+        as the rest of the pipeline: bounded by a wall-clock deadline, not
+        just an attempt count, and only transient failures are retried."""
         deadline = time.monotonic() + self.total_budget_seconds
         last_exc: Exception | None = None
         for attempt in range(self.max_retries + 1):
@@ -215,12 +212,12 @@ class LocalVllmGenerationService:
     def generate(self, request: GenerationRequest, max_tokens: int | None = None) -> GeneratedAnswer | None:
         """Returns exactly one claim citing every chunk placed in context,
         not chunks the model names itself. This is not a weaker grounding
-        signal than Gemini's per-claim citations: the NLI validator
+        signal than model-declared per-claim citations: the NLI validator
         (guardrails/grounding.py) already scores a claim against a *list* of
         candidate evidence texts and picks the best-matching one
         (`best_evidence_index`) rather than trusting a claimed citation
-        blindly — GeminiGenerationService's own citations are a hint for
-        *which* passage to check, not a substitute for checking. Handing the
+        blindly — a model's own citations are a hint for *which* passage to
+        check, not a substitute for checking. Handing the
         validator both context chunks here and letting it find the match (or
         fail to, and correctly reject the claim) reaches the same guarantee
         with zero output-schema cost on the model."""

@@ -1,7 +1,8 @@
 """Per-IP rate limiting.
 
 Deliberately simple: an in-memory sliding window, no Redis. This is a
-public-link demo protection against someone draining the Gemini API budget,
+public-link demo protection against someone monopolising the GPU the local
+model and rerankers share,
 not a production multi-tenant rate limiter — the known limitation is that
 this doesn't share state across multiple worker processes (each process
 gets its own budget). For a single-process deployment, that's the actual

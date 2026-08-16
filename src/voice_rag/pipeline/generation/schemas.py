@@ -45,8 +45,11 @@ class GeneratedClaim(BaseModel):
 
 
 class GeneratedAnswer(BaseModel):
-    """The exact shape requested from Gemini via structured outputs
-    (generationConfig.responseSchema) — see generation/gemini_service.py."""
+    """What a generation backend returns: answer text plus per-claim
+    citations. Backends may obtain this differently — a provider API can
+    constrain its output to this schema directly, while vllm_service.py
+    builds it from a plain completion (see its generate() docstring for why
+    that does not weaken grounding)."""
 
     answer_text: str
     claims: list[GeneratedClaim]

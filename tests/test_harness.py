@@ -8,7 +8,7 @@ from voice_rag.pipeline.guardrails.grounding import ClaimValidation
 
 
 class FakeGenerator:
-    """Stands in for GeminiGenerationService — no network, no API key."""
+    """Stands in for a real generation backend — no server, no network."""
 
     model = "fake-model-v0"
 
@@ -87,7 +87,7 @@ def test_mid_confidence_calls_generative_path():
 
 
 def test_generation_declined_returns_refused():
-    gen = FakeGenerator(response=None)  # None simulates Gemini declining to return a candidate
+    gen = FakeGenerator(response=None)  # None simulates the backend declining to return a candidate
     mid = (EXTRACTIVE_CONFIDENCE_THRESHOLD + LOW_CONFIDENCE_THRESHOLD) / 2
     harness = GenerationHarness(generator=gen)
     candidates = [make_candidate(rerank_score=mid)]

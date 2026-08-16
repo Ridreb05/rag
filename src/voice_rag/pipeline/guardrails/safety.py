@@ -1,10 +1,14 @@
 """Unsafe/inappropriate input pre-filter.
 
-This is a cheap, deterministic FIRST layer — explicitly not the primary
-safety mechanism. The primary mechanism is Gemini's own trained safety
-classifier: `finishReason` handling (SAFETY/PROHIBITED_CONTENT/BLOCKLIST/
-RECITATION -> None) in gemini_service.py, which is far more capable than
-any keyword list.
+A cheap, deterministic gate, and — since generation moved to a locally
+served model — the only input-side safety layer this system has. It was
+written as a first pass in front of a hosted provider's trained safety
+classifier; that classifier went away with the remote backend, so this
+keyword/regex list is no longer backed by a more capable second opinion.
+Worth stating plainly rather than leaving the module's original framing to
+imply a depth that is no longer there: a keyword list has poor recall on
+adversarial phrasing, and the answer-side guardrails (confidence refusal,
+off-topic gate, NLI grounding) are what actually carry the weight.
 
 What this pre-filter buys that the provider classifiers can't: it runs
 before retrieval, so an obviously unsafe query never spends an embedding
