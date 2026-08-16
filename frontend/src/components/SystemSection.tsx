@@ -89,7 +89,7 @@ function History({ history, onReplay }: { history: HistoryItem[]; onReplay: (ite
                 </strong>
               </div>
               <span className="flex items-center gap-1.5 font-body text-xs text-clay-muted">
-                {formatMs(item.result.latency_ms.total_ms)}
+                {formatMs(item.result.latency_ms.pipeline_ms ?? item.result.latency_ms.total_ms)}
                 <ArrowUpRight size={14} />
               </span>
             </button>

@@ -2,7 +2,7 @@ import * as Accordion from "@radix-ui/react-accordion";
 import * as Collapsible from "@radix-ui/react-collapsible";
 import { motion } from "framer-motion";
 import { ChevronDown, Clock3, FileText, ShieldCheck, Sparkles, Volume2, Zap } from "lucide-react";
-import { formatMs, isVoice, type AnswerMode, type Result } from "../types";
+import { formatMs, isVoice, SUMMARY_LATENCY_KEYS, type AnswerMode, type Result } from "../types";
 
 const modeCopy: Record<AnswerMode, { label: string; eyebrow: string }> = {
   refused: { label: "No grounded answer", eyebrow: "Signal not found" },
@@ -19,8 +19,18 @@ const modeSealClasses: Record<AnswerMode, string> = {
 export function ResultCard({ result }: { result: Result }) {
   const copy = modeCopy[result.mode];
   const confidence = Math.round(result.confidence * 100);
-  const stages = Object.entries(result.latency_ms).filter(([, value]) => typeof value === "number");
+  const stages = Object.entries(result.latency_ms).filter(
+    ([name, value]) => typeof value === "number" && !SUMMARY_LATENCY_KEYS.includes(name),
+  );
   const ModeIcon = result.mode === "generative" ? Sparkles : result.mode === "extractive" ? Zap : ShieldCheck;
+
+  // The task's <200ms target covers this system's own work; Sarvam's STT round
+  // trip is a third-party call, reported alongside rather than inside it.
+  const budgetMs = result.latency_ms.budget_ms;
+  const pipelineMs = result.latency_ms.pipeline_ms ?? result.latency_ms.total_ms;
+  const sttMs = result.latency_ms.stt_ms;
+  const withinBudget = budgetMs !== undefined && pipelineMs <= budgetMs;
+  const budgetUsedPct = budgetMs ? Math.min(100, (pipelineMs / budgetMs) * 100) : 0;
 
   return (
     <motion.section
@@ -89,11 +99,34 @@ export function ResultCard({ result }: { result: Result }) {
           <small className="font-body text-xs text-clay-muted">passages cited</small>
         </div>
         <div className="bg-white p-5">
-          <span className="font-body text-[9px] font-bold uppercase tracking-widest text-clay-muted">Response</span>
-          <strong className="mt-2 block font-heading text-3xl font-black text-clay-foreground">
-            {formatMs(result.latency_ms.total_ms)}
+          <span className="font-body text-[9px] font-bold uppercase tracking-widest text-clay-muted">Pipeline</span>
+          <strong
+            className={`mt-2 block font-heading text-3xl font-black ${
+              budgetMs === undefined ? "text-clay-foreground" : withinBudget ? "text-clay-success" : "text-clay-warning"
+            }`}
+          >
+            {formatMs(pipelineMs)}
           </strong>
-          <small className="font-body text-xs text-clay-muted">end to end</small>
+          {budgetMs === undefined ? (
+            <small className="font-body text-xs text-clay-muted">end to end</small>
+          ) : (
+            <>
+              <small className="font-body text-xs text-clay-muted">
+                {withinBudget ? "within" : "over"} {Math.round(budgetMs)} ms budget
+              </small>
+              <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-clay-accent/10">
+                <div
+                  className={`h-full rounded-full ${withinBudget ? "bg-clay-success" : "bg-clay-warning"}`}
+                  style={{ width: `${budgetUsedPct}%` }}
+                />
+              </div>
+            </>
+          )}
+          {sttMs !== undefined && (
+            <small className="mt-2 block font-body text-[10px] text-clay-muted">
+              + {formatMs(sttMs)} Sarvam STT (external)
+            </small>
+          )}
         </div>
         <div className="bg-white p-5">
           <span className="font-body text-[9px] font-bold uppercase tracking-widest text-clay-muted">Trace</span>
@@ -171,7 +204,10 @@ export function ResultCard({ result }: { result: Result }) {
               Pipeline timing
             </span>
             <span className="flex items-center gap-2 text-clay-accent">
-              {formatMs(result.latency_ms.total_ms)}
+              <span className={budgetMs === undefined ? "" : withinBudget ? "text-clay-success" : "text-clay-warning"}>
+                {formatMs(pipelineMs)}
+                {budgetMs !== undefined && ` / ${Math.round(budgetMs)} ms`}
+              </span>
               <ChevronDown size={16} className="transition-transform duration-200 group-data-[state=open]:rotate-180" />
             </span>
           </Collapsible.Trigger>

@@ -18,8 +18,19 @@ export interface LatencyMs {
   fusion_ms?: number;
   rerank_ms?: number;
   generation_ms?: number;
+  /** Sarvam speech-to-text round trip. Voice queries only. */
+  stt_ms?: number;
+  /** total_ms minus stt_ms — this system's own work, what the budget governs. */
+  pipeline_ms?: number;
+  /** The <200ms target, served by the API so it is never hardcoded here. */
+  budget_ms?: number;
   total_ms: number;
 }
+
+/** Stage keys that are accounting totals rather than pipeline stages — shown
+ *  as the headline figure and budget, so they must not repeat in the per-stage
+ *  breakdown. */
+export const SUMMARY_LATENCY_KEYS = ["total_ms", "pipeline_ms", "budget_ms"];
 
 export interface QueryResponse {
   trace_id: string;
