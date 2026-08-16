@@ -91,8 +91,15 @@ class LocalVllmGenerationService:
         self.context_chunks = context_chunks if context_chunks is not None else int(
             os.environ.get("VOICE_RAG_VLLM_CONTEXT_CHUNKS", "2")
         )
+        # Decode time is linear in this number — it is the most direct latency
+        # lever the service owns. Sized against the measured budget rather than
+        # picked round: ~144ms remains for generation after P50 retrieval, and
+        # FP8 weights sustain ~200 tok/s on this GPU, so ~20 tokens is what
+        # fits once time-to-first-token is accounted for. Raising it trades
+        # directly against the 200ms target; lowering it truncates Hindi
+        # answers, which tokenize to roughly 2-4 tokens per word.
         self.max_tokens = max_tokens if max_tokens is not None else int(
-            os.environ.get("VOICE_RAG_VLLM_MAX_TOKENS", "24")
+            os.environ.get("VOICE_RAG_VLLM_MAX_TOKENS", "20")
         )
         self.max_retries = max_retries
         self.backoff_base_seconds = backoff_base_seconds

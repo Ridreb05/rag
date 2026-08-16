@@ -100,6 +100,49 @@ if [ "${VOICE_RAG_GENERATION_BACKEND:-gemini}" = "vllm" ]; then
   # It is only exercised at all because vLLM's startup profiling runs a dummy
   # *random* sampler pass regardless of how the server is actually used.
   export VLLM_USE_FLASHINFER_SAMPLER="${VLLM_USE_FLASHINFER_SAMPLER:-0}"
+
+  # CUDA graphs on by default. --enforce-eager was set for the first boots to
+  # minimise memory and startup risk while the image was still failing for
+  # other reasons; with startup now proven it is the single largest cost in
+  # generation. Measured on this Pod with eager: 634ms to generate 24 tokens,
+  # i.e. ~40 tok/s against a ~126 tok/s memory-bandwidth ceiling for a 4B bf16
+  # model on a 4090 — only ~32% of what the hardware allows. That gap is
+  # per-token Python and kernel-launch overhead, which is exactly what graph
+  # capture removes. Set VOICE_RAG_VLLM_ENFORCE_EAGER=1 to restore the old
+  # behaviour without a rebuild if graph capture ever exhausts GPU memory.
+  vllm_eager_flag=""
+  if [ "${VOICE_RAG_VLLM_ENFORCE_EAGER:-0}" = "1" ]; then
+    vllm_eager_flag="--enforce-eager"
+  fi
+
+  # FP8 weights, because bf16 cannot meet the latency target on this model and
+  # no amount of flag tuning changes that. Decoding is memory-bandwidth bound:
+  # every token reads the entire weight set from HBM, so a 4B bf16 model moves
+  # 8GB/token, capping a 4090 (~1008 GB/s) at ~126 tok/s. Against a ~144ms
+  # generation budget that is under 11 tokens — too few for a Hindi sentence.
+  # FP8 halves the bytes moved per token, roughly doubling the ceiling to
+  # ~250 tok/s and making ~20 tokens fit. Ada (SM 8.9) has native FP8 tensor
+  # cores, so this is hardware-supported rather than emulated.
+  #
+  # Quality cost is real but small for W8A8 on a model this size, and is the
+  # right trade here: the alternative that also fits the budget is a
+  # substantially smaller model, which would cost more quality than 8-bit
+  # weights do. Set VOICE_RAG_VLLM_QUANTIZATION="" to serve bf16 instead.
+  vllm_quant_flag=""
+  vllm_quant="${VOICE_RAG_VLLM_QUANTIZATION-fp8}"
+  if [ -n "$vllm_quant" ]; then
+    vllm_quant_flag="--quantization $vllm_quant"
+  fi
+
+  # --max-num-seqs 8, well below the default: this deployment serves one query
+  # at a time, and the number of CUDA graphs captured at startup scales with
+  # this. Fewer graphs is less capture time and less memory held for batch
+  # sizes that will never occur.
+  #
+  # --enable-prefix-caching: every request shares an identical system prompt,
+  # so its prefill is recomputed on each query for no reason. Caching it is
+  # small (the passages and question still change) but free.
+
   echo "Starting vLLM ($vllm_model) on port $vllm_port."
   (
     exec /opt/vllm-venv/bin/vllm serve "$vllm_model" \
@@ -107,7 +150,10 @@ if [ "${VOICE_RAG_GENERATION_BACKEND:-gemini}" = "vllm" ]; then
       --dtype bfloat16 \
       --max-model-len "${VOICE_RAG_VLLM_MAX_MODEL_LEN:-4096}" \
       --gpu-memory-utilization "${VOICE_RAG_VLLM_GPU_MEM_FRACTION:-0.55}" \
-      --enforce-eager
+      --enable-prefix-caching \
+      --max-num-seqs "${VOICE_RAG_VLLM_MAX_NUM_SEQS:-8}" \
+      $vllm_quant_flag \
+      $vllm_eager_flag
   ) &
   vllm_pid=$!
   vllm_attempts=0
