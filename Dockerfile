@@ -16,16 +16,21 @@ FROM qdrant/qdrant:v1.13.4 AS qdrant-runtime
 # host drivers that reject CUDA 13 images before a container can start.
 FROM nvidia/cuda:11.8.0-runtime-ubuntu22.04
 
-# gcc: not needed by this app's own venv, but required for the vLLM venv —
-# Triton JIT-compiles custom CUDA kernels at runtime (e.g. the multimodal
-# position-embedding kernel Qwen3.5-4B's profiling pass touches even for a
-# text-only request), and this base image is deliberately the slim "runtime"
-# CUDA variant, not "devel", so it ships no compiler at all by default.
-# Confirmed on the actual Pod: vLLM got through model loading and GPU memory
-# profiling started, then failed here specifically — RuntimeError: Failed to
-# find C compiler — not a GPU-memory or version-compatibility issue.
+# gcc + ninja-build: not needed by this app's own venv, but required by the
+# vLLM venv, which JIT-compiles kernels during startup profiling. This base
+# is deliberately the slim "runtime" CUDA variant, so it ships no build
+# toolchain at all — every startup failure on this Pod so far has been that
+# one root cause surfacing through a different library:
+#   Triton (multimodal pos-embed kernel) -> needed gcc
+#   FlashInfer (sampler kernel)          -> needs ninja *and* nvcc
+# nvcc only exists in the far larger -devel base, so FlashInfer's sampler is
+# switched off by env var in runpod-entrypoint.sh rather than compiled;
+# ninja-build is installed here to cover the JIT paths that need a build tool
+# but not a CUDA compiler (torch cpp_extension, Triton caching), so those fail
+# now at build time in CI rather than on a paid GPU Pod.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3.11 python3.11-venv python3.11-dev python3-pip curl ca-certificates libunwind8 gcc \
+    python3.11 python3.11-venv python3.11-dev python3-pip curl ca-certificates libunwind8 \
+    gcc g++ ninja-build \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh

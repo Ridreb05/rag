@@ -125,12 +125,30 @@ SPARSE_TIMEOUT_SECONDS = 0.1
 # Both are real configurations of the same pipeline; neither is a special
 # "demo mode" that changes behaviour beyond this one budget.
 REQUEST_BUDGET_SECONDS = float(os.environ.get("VOICE_RAG_REQUEST_BUDGET_SECONDS", "0.2"))
-# Floor for attempting a generative answer. Measured real Gemini generation is
-# ~2.1s median, so a generative call never fits a 200ms budget — this exists
-# so the routing decision is made by measured remaining time rather than
-# hardcoded pessimism: raise REQUEST_BUDGET_SECONDS and generation re-enables
-# itself with no other change.
-MIN_GENERATION_BUDGET_SECONDS = float(os.environ.get("VOICE_RAG_MIN_GENERATION_BUDGET_SECONDS", "1.5"))
+# Floor for attempting a generative answer, defaulted per backend because the
+# two differ by more than an order of magnitude and a single constant makes one
+# of them wrong:
+#
+#   gemini -> 1.5s. Measured ~2.1s median; a remote call cannot fit a 200ms
+#             budget under any arrangement, so generation is always deferred to
+#             phase two and the deadline is met by the extractive answer.
+#   vllm   -> 0.12s. A model resident on this process's own GPU has no network
+#             hop, so generation *can* fit inside the request — which is the
+#             entire reason for running one locally. At P50 retrieval (~56ms)
+#             roughly 144ms of a 200ms budget remains, so this threshold admits
+#             generation whenever there is realistically time for it.
+#
+# This is a threshold for *attempting* generation, not a cap on it: if local
+# generation turns out slower than the remaining budget, the request overruns
+# rather than being cancelled mid-flight. That is the honest failure mode to
+# watch in the first measurements — `pipeline_ms` above 200 with
+# mode=generative means this number is too optimistic for the hardware and
+# should be raised (pushing generation back to phase two), not that generation
+# is broken.
+_CONFIGURED_BACKEND = os.environ.get("VOICE_RAG_GENERATION_BACKEND", "gemini").strip().lower()
+MIN_GENERATION_BUDGET_SECONDS = float(
+    os.environ.get("VOICE_RAG_MIN_GENERATION_BUDGET_SECONDS", "0.12" if _CONFIGURED_BACKEND == "vllm" else "1.5")
+)
 # Retry/wall-clock budget for the refinement generator only — see where
 # services.refine_harness is built for why this is not the in-request 8s.
 REFINE_GENERATION_BUDGET_SECONDS = float(os.environ.get("VOICE_RAG_REFINE_GENERATION_BUDGET_SECONDS", "45"))
