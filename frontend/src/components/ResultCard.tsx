@@ -76,7 +76,7 @@ export function ResultCard({ result, refining = false }: { result: Result; refin
       initial="hidden"
       animate="visible"
       variants={{ hidden: { opacity: 0, y: 28 }, visible: { opacity: 1, y: 0, transition: { staggerChildren: 0.07 } } }}
-      className="w-full overflow-hidden rounded-[32px] bg-white/80 shadow-clayCard backdrop-blur-xl sm:rounded-[40px]"
+      className="mx-auto my-10 w-[min(100%-32px,1200px)] overflow-hidden rounded-[32px] bg-white/80 shadow-clayCard backdrop-blur-xl sm:rounded-[40px]"
     >
       <motion.header
         variants={{ hidden: { opacity: 0, y: 8 }, visible: { opacity: 1, y: 0 } }}

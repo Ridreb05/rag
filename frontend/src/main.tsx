@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import { createRoot } from "react-dom/client";
 import { QueryClient, QueryClientProvider, useMutation } from "@tanstack/react-query";
 import * as Toast from "@radix-ui/react-toast";
-import { AnimatePresence, motion } from "framer-motion";
+import { AnimatePresence } from "framer-motion";
 import "@fontsource/nunito/700.css";
 import "@fontsource/nunito/800.css";
 import "@fontsource/nunito/900.css";
@@ -176,48 +176,21 @@ function App() {
       <Header health={health} />
 
       <main id="top">
-        {/* Ask and answer sit side by side from `lg` up, so a result is visible
-            without scrolling away from the input that produced it. Below `lg`
-            the columns collapse and the original stacked order is preserved. */}
-        <div className="mx-auto grid w-[min(100%-32px,1500px)] grid-cols-1 items-start gap-6 py-10 lg:grid-cols-[minmax(0,5fr)_minmax(0,7fr)]">
-          {/* Sticky so the console stays put while a long answer is read. */}
-          <div className="lg:sticky lg:top-6">
-            <QueryConsole
-              query={query}
-              setQuery={setQuery}
-              pending={pending}
-              recording={recording}
-              micDisabled={micDisabled}
-              micMessage={micMessage}
-              onSubmit={runText}
-              onToggleRecording={toggleRecording}
-            />
-          </div>
+        <QueryConsole
+          query={query}
+          setQuery={setQuery}
+          pending={pending}
+          recording={recording}
+          micDisabled={micDisabled}
+          micMessage={micMessage}
+          onSubmit={runText}
+          onToggleRecording={toggleRecording}
+        />
 
-          <div className="min-w-0">
-            <AnimatePresence mode="wait">
-              {pending && <LoadingCard voice={voiceMutation.isPending} />}
-              {result && !pending && <ResultCard result={result} refining={refining} />}
-              {!pending && !result && (
-                <motion.div
-                  key="answer-placeholder"
-                  initial={{ opacity: 0 }}
-                  animate={{ opacity: 1 }}
-                  exit={{ opacity: 0 }}
-                  className="grid min-h-[320px] place-items-center rounded-[32px] border-2 border-dashed border-clay-accent/20 bg-white/40 p-10 text-center backdrop-blur-xl sm:rounded-[40px]"
-                >
-                  <div className="max-w-sm">
-                    <p className="font-heading text-xl font-extrabold text-clay-foreground">Answers appear here</p>
-                    <p className="mt-2 font-body text-sm text-clay-muted">
-                      Ask a question in Hindi — type it or use the mic. Every answer cites the passages it came
-                      from, and the pipeline timing is shown against the 200&nbsp;ms budget.
-                    </p>
-                  </div>
-                </motion.div>
-              )}
-            </AnimatePresence>
-          </div>
-        </div>
+        <AnimatePresence mode="wait">
+          {pending && <LoadingCard voice={voiceMutation.isPending} />}
+          {result && !pending && <ResultCard result={result} refining={refining} />}
+        </AnimatePresence>
 
         <SystemSection
           health={health}
@@ -225,9 +198,7 @@ function App() {
           onReplay={(item) => {
             setQuery(item.query);
             setResult(item.result);
-            // Back to the console/answer pair. A fixed offset was right when
-            // these were stacked; side by side, both live at the top.
-            window.scrollTo({ top: 0, behavior: "smooth" });
+            window.scrollTo({ top: 700, behavior: "smooth" });
           }}
         />
       </main>
