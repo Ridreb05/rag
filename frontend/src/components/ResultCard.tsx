@@ -19,8 +19,11 @@ const modeSealClasses: Record<AnswerMode, string> = {
 export function ResultCard({ result }: { result: Result }) {
   const copy = modeCopy[result.mode];
   const confidence = Math.round(result.confidence * 100);
+  // Only `_ms` keys are durations. latency_ms also carries diagnostic counts
+  // (bm25_recovered), which rendered through formatMs would invent a timing
+  // that does not exist — "2 ms" for what is actually "2 chunks".
   const stages = Object.entries(result.latency_ms).filter(
-    ([name, value]) => typeof value === "number" && !SUMMARY_LATENCY_KEYS.includes(name),
+    ([name, value]) => typeof value === "number" && name.endsWith("_ms") && !SUMMARY_LATENCY_KEYS.includes(name),
   );
   const ModeIcon = result.mode === "generative" ? Sparkles : result.mode === "extractive" ? Zap : ShieldCheck;
 
@@ -214,9 +217,11 @@ export function ResultCard({ result }: { result: Result }) {
           <Collapsible.Content className="grid grid-cols-2 gap-3 px-5 pb-5 sm:grid-cols-3 lg:grid-cols-6">
             {stages.map(([name, value], index) => (
               <div key={name} className="rounded-xl bg-white p-4 shadow-clayCard">
-                <span className="font-body text-[9px] font-bold text-clay-accentAlt">0{index + 1}</span>
+                <span className="font-body text-[9px] font-bold text-clay-accentAlt">
+                  {String(index + 1).padStart(2, "0")}
+                </span>
                 <p className="mt-1 font-body text-[10px] font-bold uppercase text-clay-muted">
-                  {name.replace("_ms", "").replace(/\b\w/g, (letter) => letter.toUpperCase())}
+                  {name.replace(/_ms$/, "").replace(/_/g, " ")}
                 </p>
                 <b className="mt-1 block font-heading text-lg font-black text-clay-foreground">{formatMs(value as number)}</b>
               </div>
