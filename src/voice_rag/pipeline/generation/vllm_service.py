@@ -79,17 +79,21 @@ class LocalVllmGenerationService:
         self,
         base_url: str | None = None,
         model: str | None = None,
-        context_chunks: int = 2,
-        max_tokens: int = 20,
-        timeout: float = 5.0,
+        context_chunks: int | None = None,
+        max_tokens: int | None = None,
+        timeout: float | None = None,
         max_retries: int = 1,
         backoff_base_seconds: float = 0.2,
         total_budget_seconds: float = 3.0,
     ):
         self.base_url = (base_url or os.environ.get("VOICE_RAG_VLLM_BASE_URL", DEFAULT_BASE_URL)).rstrip("/")
         self.model = model or os.environ.get("VOICE_RAG_VLLM_MODEL", DEFAULT_MODEL)
-        self.context_chunks = context_chunks
-        self.max_tokens = max_tokens
+        self.context_chunks = context_chunks if context_chunks is not None else int(
+            os.environ.get("VOICE_RAG_VLLM_CONTEXT_CHUNKS", "2")
+        )
+        self.max_tokens = max_tokens if max_tokens is not None else int(
+            os.environ.get("VOICE_RAG_VLLM_MAX_TOKENS", "24")
+        )
         self.max_retries = max_retries
         self.backoff_base_seconds = backoff_base_seconds
         # Deliberately much smaller than Gemini's 8s default: a local model
@@ -97,7 +101,13 @@ class LocalVllmGenerationService:
         # server still loading or out of memory — a short budget surfaces
         # that as a fast extractive fallback instead of a slow one.
         self.total_budget_seconds = total_budget_seconds
-        self._client = httpx.Client(timeout=timeout)
+        # Per-attempt HTTP timeout defaults to the whole budget rather than a
+        # fixed constant. A fixed 5s here silently capped the refinement
+        # generator — constructed with a 45s budget precisely because nobody
+        # waits on it — at 5s per attempt, and would bite hardest on the first
+        # request after startup, which pays one-time CUDA warmup on top of
+        # normal generation and is exactly the request a demo opens with.
+        self._client = httpx.Client(timeout=timeout if timeout is not None else total_budget_seconds)
 
     def close(self) -> None:
         self._client.close()
@@ -140,12 +150,23 @@ class LocalVllmGenerationService:
                         )
                     resp.raise_for_status()
                     for line in resp.iter_lines():
-                        if not line or not line.startswith("data: "):
+                        if not line or not line.startswith("data:"):
                             continue
-                        data = line[len("data: ") :]
+                        data = line.split(":", 1)[1].strip()
                         if data == "[DONE]":
                             break
-                        delta = json.loads(data)["choices"][0]["delta"].get("content")
+                        # Tolerate chunks that carry no content: the opening
+                        # delta announces only `role`, and a usage-summary
+                        # chunk can carry an empty `choices` list entirely.
+                        # Indexing [0] blindly turns either into an exception
+                        # that the harness can only recover from by discarding
+                        # a generation that actually succeeded.
+                        try:
+                            choices = json.loads(data).get("choices") or []
+                            delta = choices[0].get("delta", {}).get("content") if choices else None
+                        except (json.JSONDecodeError, AttributeError, IndexError):
+                            logger.warning("vllm_stream_chunk_unparsed trace_id=%s", trace_id)
+                            continue
                         if delta:
                             if t_first_token is None:
                                 t_first_token = time.monotonic()

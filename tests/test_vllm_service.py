@@ -63,6 +63,30 @@ def test_generate_returns_answer_citing_context_chunks_only():
     assert result.claims[0].cited_chunk_ids == ["c0", "c1"]
 
 
+def test_tolerates_role_only_and_usage_only_chunks():
+    """A real vLLM stream opens with a role-only delta and can close with a
+    usage chunk carrying an empty `choices` list. Indexing into those blindly
+    raises, and the harness's only recovery is to discard a generation that
+    actually succeeded — so the parser skips them instead."""
+    body = "\n\n".join(
+        [
+            'data: {"choices":[{"delta":{"role":"assistant"},"index":0}]}',
+            'data: {"choices":[{"delta":{"content":"real answer"},"index":0}]}',
+            'data: {"choices":[],"usage":{"total_tokens":42}}',
+            "data: [DONE]",
+        ]
+    ) + "\n\n"
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=body)
+
+    svc = make_service(httpx.MockTransport(handler))
+    result = svc.generate(make_request())
+
+    assert result is not None
+    assert result.answer_text == "real answer"
+
+
 def test_empty_completion_returns_none():
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(200, text=sse_body())
