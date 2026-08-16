@@ -54,11 +54,13 @@ logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
 DEFAULT_BASE_URL = "http://127.0.0.1:8001/v1"
-# Verify this against the model actually served — model naming here tracks
-# what was requested, not a repo id independently confirmed to exist at the
-# time this was written. `LocalVllmGenerationService` never hardcodes it
-# beyond this default; `VOICE_RAG_VLLM_MODEL` overrides it.
-DEFAULT_MODEL = "Qwen/Qwen3.5-4B-Instruct"
+# Confirmed against the model card (huggingface.co/Qwen/Qwen3.5-4B) — no
+# "-Instruct" suffix; that repo id does not exist. This is the chat/
+# instruction-tuned model directly (the base pretrain checkpoint is the
+# separate "Qwen3.5-4B-Base"). It ships in hybrid-thinking mode by default,
+# which is exactly what `enable_thinking: False` below turns off.
+# `VOICE_RAG_VLLM_MODEL` overrides this if a different model is served.
+DEFAULT_MODEL = "Qwen/Qwen3.5-4B"
 
 SYSTEM_INSTRUCTION = (
     "Answer only using the passages given below, in the same language as the question. "

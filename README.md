@@ -239,11 +239,12 @@ its Dockerfile/entrypoint (`infrastructure/runpod-entrypoint.sh` starts `vllm se
 before uvicorn, isolated from the app's own torch install — see that file for why).
 
 **What is and isn't verified:** the harness wiring, retry logic, prompt construction, and claim
-assembly are unit-tested against a mocked vLLM server (`tests/test_vllm_service.py`) and pass. Real
-TTFT/generation-latency numbers on this repo's actual GPU hardware, and the exact
-Qwen3.5-4B-Instruct repo id, are **not yet measured** — that requires a live server on a GPU Pod,
-which this session did not run. Reported here as implemented, not as benchmarked; the Latency
-section above measures the Gemini backend only.
+assembly are unit-tested against a mocked vLLM server (`tests/test_vllm_service.py`) and pass. The
+model id (`Qwen/Qwen3.5-4B` — no `-Instruct` suffix; that repo does not exist) and its
+`enable_thinking` toggle are confirmed against the model card, not guessed. Real TTFT/generation
+latency on this repo's actual GPU hardware is **not yet measured** — that requires a live server on
+a GPU Pod, which this session did not run. Reported here as implemented, not as benchmarked; the
+Latency section above measures the Gemini backend only.
 
 ## 6. Guardrails
 
