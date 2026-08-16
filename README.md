@@ -205,11 +205,13 @@ real cited passages, not degraded output. This is a genuine trade, not a metric 
 stated rather than buried: **the sub-200ms number and a live LLM call are mutually exclusive, and
 this configuration chooses the deadline.**
 
-With the deadline raised so generation runs (`REQUEST_BUDGET_SECONDS` large), the same pipeline on
-the same index previously measured P50 80.4ms / P70 110.5ms / P100 3434.5ms, mode mix 96
-extractive / 39 refused / 15 generative — P50 and P70 still well inside target, P100 dominated
-entirely by the Gemini network round-trip. Both configurations are real; the deadline is one
-constant to change.
+With the deadline raised so generation runs (`VOICE_RAG_REQUEST_BUDGET_SECONDS=10`), the same
+pipeline on the same index previously measured P50 80.4ms / P70 110.5ms / P100 3434.5ms, mode mix
+96 extractive / 39 refused / 15 generative — P50 and P70 still well inside target, P100 dominated
+entirely by the Gemini network round-trip. Both configurations are real and neither is a special
+"demo mode": the budget is a single environment variable, and nothing else about the pipeline
+changes with it. Latency numbers here are the default (`0.2`); a walkthrough of the generative
+path wants the raised one.
 
 The genuinely better fix, not implemented here: return the sub-200ms extractive answer immediately
 and stream the generated refinement in afterwards, so the deadline and the LLM stop competing.
@@ -329,23 +331,72 @@ Or `docker compose up` for the two-service (Qdrant + app) local topology.
 
 ## Deployment
 
-**Live deployment** runs on Fly.io (`Dockerfile.fly`), CPU-only. It bakes in a smaller demo index
-(`data/api_smoketest/`, embedded Qdrant, ~40k chunks) rather than the full `full1` production
-index, so it fits a modest, affordable machine — the Latency section's numbers come from a real
-benchmark against the full 964,603-chunk index on GPU, measured separately, not reproduced live.
-This deployment exists to prove the system answers real voice and text queries end to end.
+Two deployments, for two different jobs:
 
-It will not hit 200ms, and the UI does not pretend otherwise: on shared CPU the cross-encoder
-reranker alone takes ~16s (versus ~44ms on GPU), so the response's `pipeline_ms` is far over
-budget and every result card renders that over-budget state honestly instead of hiding the
-comparison. The <200ms claim belongs to the GPU numbers above; the live link demonstrates
-correctness, not latency.
+| | Fly.io (`Dockerfile.fly`) | RunPod GPU Pod (`Dockerfile`) |
+|---|---|---|
+| index | `api_smoketest`, ~40k chunks (~4% of full1) | **full1, all 964,603 chunks** |
+| hardware | shared CPU | GPU |
+| shows | that the system answers real queries end to end | the real pipeline at its designed scale and speed |
+| always on | yes | no — started when needed, stopped after |
 
-`Dockerfile.cloudrun` and `Dockerfile` (RunPod) bake the full production index into a GPU-backed
-image (Cloud Run / RunPod) and are the architecture this system is actually designed to run at —
-not used for the live link here for reasons unrelated to the code (regional payment-processing
-issues with Cloud Billing, not a technical limitation). `infrastructure/runpod-entrypoint.sh`
-also doubles as the GPU environment originally used to *build* the full index.
+The Fly link is the permanent one because it is cheap enough to leave running; the RunPod Pod is
+where the pipeline actually performs as designed, and is what the Latency section measures.
+
+### RunPod GPU Pod — the full-index deployment
+
+`infrastructure/runpod-entrypoint.sh` runs Qdrant on localhost and uvicorn on port 8000 behind
+RunPod's HTTPS proxy, in one container. It is written to survive stop/start on a persistent network
+volume, which is what makes an on-demand Pod practical rather than a 24/7 cost:
+
+- Attach a **network volume** at `/workspace` (the index and HF model cache live there, so a
+  restart re-uses both instead of re-downloading ~3.8GB of weights and rebuilding a 9GB index).
+- `VOICE_RAG_DATA_ROOT` (default `/workspace/voice-rag`) — where corpus, Qdrant storage and the
+  model cache persist.
+- `VOICE_RAG_BOOTSTRAP_INDEX=1` on **first** boot only: builds the index, writes a resumable state
+  manifest after every committed batch, and exits quickly on later boots once the manifest says the
+  version is complete. Qdrant storage is isolated per `VOICE_RAG_INDEX_VERSION` so a stopped legacy
+  collection cannot start its optimizer and starve a clean bootstrap sharing the volume.
+- A bootstrap lock directory prevents two Pods on one volume from writing the same BM25 index
+  concurrently. Recovery from a stale lock after a forced stop is deliberately opt-in
+  (`VOICE_RAG_RECOVER_STALE_BOOTSTRAP_LOCK=1` for a single restart) rather than automatic, because
+  clearing it wrongly corrupts the index.
+- `/v1/health` reports ready only when the state manifest *and* Qdrant's exact point count agree,
+  so an interrupted upload cannot look ready merely because its collection exists.
+
+**Generation and the latency budget.** `VOICE_RAG_REQUEST_BUDGET_SECONDS` (default `0.2`) is the
+deadline from the Latency section. At the default, a ~2.1s Gemini call cannot fit, so answers stay
+extractive — correct for the latency claim, but it means the generative path never runs. To
+exercise the full generative pipeline (structured output, grounding validation) set it high, e.g.
+`VOICE_RAG_REQUEST_BUDGET_SECONDS=10`. Both are real configurations of the same code; only that one
+budget changes.
+
+To re-run the benchmark against the Pod, point it at the local Qdrant and BM25 paths:
+
+```bash
+uv run python benchmark/latency_benchmark.py --language hi --index-version full1 \
+    --qdrant-url http://127.0.0.1:6333 --bm25-path "$VOICE_RAG_DATA_ROOT/data/full_index/bm25/hi_validation_full1"
+```
+
+### Fly.io — the always-on demo
+
+Runs CPU-only, with the smaller `data/api_smoketest/` index (embedded Qdrant, ~40k chunks) so it
+fits a modest, affordable machine. It exists to prove the system answers real voice and text
+queries end to end, and two things follow from that scope — both stated here rather than left for
+a visitor to discover:
+
+- **It refuses often, and that is correct.** ~40k chunks is about 4% of the corpus, so most
+  queries genuinely have no supporting passage indexed. Measured against 20 real validation
+  queries: 9 answered, 11 refused. On the full index the same routing answers the large majority
+  (see the mode mix in Latency). The refusals demonstrate the confidence gate working, not a
+  broken retriever.
+- **It will not hit 200ms, and the UI does not pretend otherwise.** On shared CPU the
+  cross-encoder reranker alone takes ~16s versus ~44ms on GPU, so `pipeline_ms` lands far over
+  budget and every result card renders that over-budget state honestly. The <200ms claim belongs
+  to the GPU numbers above; this link demonstrates correctness, not latency.
+
+`Dockerfile.cloudrun` targets the same full-index GPU architecture on Cloud Run, unused here for
+reasons unrelated to the code (regional payment-processing failures with Cloud Billing).
 
 The off-topic centroid gate (see Guardrails) is disabled specifically on this CPU deployment
 (`VOICE_RAG_LOAD_OFF_TOPIC_GATE=0` in `Dockerfile.fly`) — measured directly: building it re-embeds

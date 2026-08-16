@@ -107,14 +107,23 @@ SPARSE_TIMEOUT_SECONDS = 0.1
 # picks the most complete answer that still fits. Every degradation step has
 # a grounded answer to fall back to (the top reranked passage), so respecting
 # the deadline costs answer *richness* on slow queries, never correctness.
-REQUEST_BUDGET_SECONDS = 0.2
+#
+# Environment-overridable because 200ms and a live LLM call are mutually
+# exclusive (see MIN_GENERATION_BUDGET_SECONDS), and which of the two matters
+# is a deployment question, not a code one:
+#   0.2 (default) — enforce the latency target; answers stay extractive.
+#   e.g. 10       — let generation run, for a walkthrough of the full
+#                   generative path (structured output, grounding validation)
+#                   where interactive latency is not what is being shown.
+# Both are real configurations of the same pipeline; neither is a special
+# "demo mode" that changes behaviour beyond this one budget.
+REQUEST_BUDGET_SECONDS = float(os.environ.get("VOICE_RAG_REQUEST_BUDGET_SECONDS", "0.2"))
 # Floor for attempting a generative answer. Measured real Gemini generation is
 # ~2.1s median, so a generative call never fits a 200ms budget — this exists
 # so the routing decision is made by measured remaining time rather than
-# hardcoded pessimism: raise REQUEST_BUDGET_SECONDS (e.g. for a batch/offline
-# deployment that does not need interactivity) and generation re-enables
+# hardcoded pessimism: raise REQUEST_BUDGET_SECONDS and generation re-enables
 # itself with no other change.
-MIN_GENERATION_BUDGET_SECONDS = 1.5
+MIN_GENERATION_BUDGET_SECONDS = float(os.environ.get("VOICE_RAG_MIN_GENERATION_BUDGET_SECONDS", "1.5"))
 MAX_AUDIO_BYTES = 15 * 1024 * 1024
 # Sarvam's BCP-47 codes; "or" -> "od-IN" is the one exception to the naive <code>-IN pattern.
 SARVAM_BCP47 = {
