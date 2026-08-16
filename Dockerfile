@@ -43,14 +43,25 @@ RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev
 # exists specifically for this host's driver — see the base-image comment.
 # A separate venv keeps the two CUDA runtimes from touching each other.
 #
-# UNVERIFIED AGAINST THIS HOST: whether a CUDA 12.x *container* actually runs
-# under the driver that rejected CUDA 13 (the constraint the cu118 pin above
-# was chosen to satisfy). Check before relying on this in a demo:
-#   nvidia-smi   # driver version, on the Pod
+# Verified on the actual host driver (580.173.02 — comfortably supports
+# CUDA 13, so CUDA 12.x is not the constraint the base image's cu118 pin was
+# chosen against; that limitation was hit on a different, older RunPod host).
+#
+# --python-preference only-managed forces uv to download its own standalone
+# CPython 3.11 build here rather than trust python3.11 already on PATH.
+# Confirmed the hard way: this base image's apt python3.11 reports itself as
+# `3.11.0rc1` (visible in this app's own outbound request user-agents) — a
+# pre-release build missing sys.get_int_max_str_digits, which recent
+# torch/vLLM releases assume unconditionally, and which building the vLLM
+# venv against it crashes on before vLLM does anything with the GPU or the
+# model at all. uv's managed builds are complete final releases; the system
+# one is not, in this image.
+#
 # vllm's version is intentionally unpinned to a specific patch release here —
 # pin it once a version is confirmed to serve the intended model correctly on
 # this host, rather than asserting a version this comment can't verify.
-RUN /root/.local/bin/uv venv /opt/vllm-venv --python 3.11 && \
+RUN /root/.local/bin/uv python install 3.11 && \
+    /root/.local/bin/uv venv /opt/vllm-venv --python 3.11 --python-preference only-managed && \
     /root/.local/bin/uv pip install --python /opt/vllm-venv/bin/python vllm
 
 # Catch Linux-only torch / Transformers import failures in CI before an image
