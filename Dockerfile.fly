@@ -46,6 +46,22 @@ RUN --mount=type=cache,target=/root/.cache/uv \
     --index-url https://download.pytorch.org/whl/cpu \
     --force-reinstall --no-deps "torch==2.6.0"
 
+# Pre-download BGE-M3 and the reranker at build time instead of on first
+# boot. Measured directly: BGE-M3's file-by-file Hugging Face download alone
+# took 9.5 minutes over this host's runtime network, and the combined time
+# to fetch + load both models pushed the container past its memory budget
+# before FastAPI's lifespan could ever finish (an OOM kill mid-startup, not
+# steady-state — the process needs the downloaded safetensors AND the
+# instantiated model in memory simultaneously while loading). Baking the
+# weights into an image layer means the build pays this cost once; every
+# container boot after that is a cache hit, not a network call.
+RUN /app/.venv/bin/python -c "\
+from FlagEmbedding import BGEM3FlagModel; \
+BGEM3FlagModel('BAAI/bge-m3', use_fp16=False, device='cpu'); \
+from transformers import AutoModelForSequenceClassification, AutoTokenizer; \
+AutoTokenizer.from_pretrained('BAAI/bge-reranker-v2-m3'); \
+AutoModelForSequenceClassification.from_pretrained('BAAI/bge-reranker-v2-m3')"
+
 COPY src/ ./src/
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
 

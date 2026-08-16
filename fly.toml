@@ -1,5 +1,5 @@
 app = "clearask-voice-rag"
-primary_region = "bom"
+primary_region = "sin"
 
 [build]
   dockerfile = "Dockerfile.fly"
@@ -12,6 +12,6 @@ primary_region = "bom"
   min_machines_running = 1
 
 [[vm]]
-  memory = "8gb"
+  memory = "4096"
   cpu_kind = "shared"
   cpus = 2
