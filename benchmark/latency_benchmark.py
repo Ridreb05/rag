@@ -39,7 +39,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent.parent / "src"))
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from voice_rag.pipeline.embeddings.service import EmbeddingService
-from voice_rag.pipeline.generation.gemini_service import GeminiGenerationService
+from voice_rag.pipeline.generation.factory import build_generator
 from voice_rag.pipeline.generation.harness import EXTRACTIVE_CONFIDENCE_THRESHOLD, GenerationHarness
 from voice_rag.pipeline.generation.schemas import RetrievalCandidate
 from voice_rag.pipeline.guardrails.off_topic import OffTopicGate, compute_corpus_centroid
@@ -240,7 +240,7 @@ def run_benchmark(
     texts = [p.payload["text"] for p in points if p.payload and p.payload.get("text")]
     off_topic_gate = OffTopicGate(compute_corpus_centroid(embedding.embed(texts).dense)) if texts else None
 
-    generator = GeminiGenerationService()
+    generator = build_generator()
     harness = GenerationHarness(generator=generator, grounding_validator=None, off_topic_gate=off_topic_gate)
 
     e2e_sample = sample.sample(n=min(n_queries_e2e, len(sample)), random_state=seed + 1).reset_index(drop=True)

@@ -16,6 +16,7 @@ qdrant_storage_path="${VOICE_RAG_QDRANT_STORAGE_PATH:-$data_root/qdrant/$index_v
 mkdir -p "$qdrant_storage_path"
 
 qdrant_pid=""
+vllm_pid=""
 bootstrap_lock_dir=""
 
 release_bootstrap_lock() {
@@ -28,6 +29,9 @@ release_bootstrap_lock() {
 
 cleanup() {
   release_bootstrap_lock
+  if [ -n "$vllm_pid" ]; then
+    kill "$vllm_pid" 2>/dev/null || true
+  fi
   if [ -n "$qdrant_pid" ]; then
     kill "$qdrant_pid" 2>/dev/null || true
   fi
@@ -70,6 +74,47 @@ if [ "${VOICE_RAG_MANAGED_QDRANT:-1}" = "1" ]; then
     fi
     sleep 1
   done
+fi
+
+# Local generation backend. Runs in its own venv (/opt/vllm-venv), built
+# separately from /app/.venv — vLLM's published wheels pull their own torch
+# build (CUDA 12.x), which would otherwise force-upgrade the torch==...+cu118
+# this image is pinned to for BGE-M3/reranker/NLI compatibility with this
+# host's driver (see Dockerfile). Two venvs, two CUDA runtimes, one GPU: the
+# isolation avoids a dependency conflict, not the GPU-memory sharing, which
+# --gpu-memory-utilization below still has to budget for by hand.
+if [ "${VOICE_RAG_GENERATION_BACKEND:-gemini}" = "vllm" ]; then
+  vllm_model="${VOICE_RAG_VLLM_MODEL:-Qwen/Qwen3.5-4B-Instruct}"
+  vllm_port="${VOICE_RAG_VLLM_PORT:-8001}"
+  export VOICE_RAG_VLLM_BASE_URL="${VOICE_RAG_VLLM_BASE_URL:-http://127.0.0.1:${vllm_port}/v1}"
+  echo "Starting vLLM ($vllm_model) on port $vllm_port."
+  (
+    exec /opt/vllm-venv/bin/vllm serve "$vllm_model" \
+      --port "$vllm_port" \
+      --dtype bfloat16 \
+      --max-model-len "${VOICE_RAG_VLLM_MAX_MODEL_LEN:-4096}" \
+      --gpu-memory-utilization "${VOICE_RAG_VLLM_GPU_MEM_FRACTION:-0.55}" \
+      --enforce-eager
+  ) &
+  vllm_pid=$!
+  vllm_attempts=0
+  until curl -fsS "http://127.0.0.1:${vllm_port}/health" >/dev/null 2>&1; do
+    if ! kill -0 "$vllm_pid" 2>/dev/null; then
+      echo "vLLM exited before becoming ready — check GPU memory (BGE-M3/reranker/NLI already hold some) and that $vllm_model is a real, accessible model id." >&2
+      wait "$vllm_pid" || true
+      exit 1
+    fi
+    vllm_attempts=$((vllm_attempts + 1))
+    if [ "$vllm_attempts" -gt "${VOICE_RAG_VLLM_READY_TIMEOUT_SECONDS:-300}" ]; then
+      # 300s covers a warm boot (weights already in $HF_HOME on the volume).
+      # A cold first boot downloads ~8GB of weights first — raise this for
+      # that boot specifically rather than raising the default for every one.
+      echo "vLLM did not become ready within ${VOICE_RAG_VLLM_READY_TIMEOUT_SECONDS:-300} seconds" >&2
+      exit 1
+    fi
+    sleep 1
+  done
+  echo "vLLM ready."
 fi
 
 : "${BM25_PATH:=/app/data/full_index/bm25/${index_language}_${index_split}_${index_version}}"

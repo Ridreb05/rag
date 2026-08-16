@@ -37,6 +37,22 @@ COPY infrastructure/runpod-entrypoint.sh /usr/local/bin/runpod-entrypoint
 RUN chmod +x /usr/local/bin/runpod-entrypoint
 RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev
 
+# vLLM lives in its own venv, deliberately not `uv add`ed to pyproject.toml.
+# vLLM's published wheels pull their own torch build (CUDA 12.x); installed
+# into /app/.venv it would upgrade the torch==...+cu118 pin above, which
+# exists specifically for this host's driver — see the base-image comment.
+# A separate venv keeps the two CUDA runtimes from touching each other.
+#
+# UNVERIFIED AGAINST THIS HOST: whether a CUDA 12.x *container* actually runs
+# under the driver that rejected CUDA 13 (the constraint the cu118 pin above
+# was chosen to satisfy). Check before relying on this in a demo:
+#   nvidia-smi   # driver version, on the Pod
+# vllm's version is intentionally unpinned to a specific patch release here —
+# pin it once a version is confirmed to serve the intended model correctly on
+# this host, rather than asserting a version this comment can't verify.
+RUN /root/.local/bin/uv venv /opt/vllm-venv --python 3.11 && \
+    /root/.local/bin/uv pip install --python /opt/vllm-venv/bin/python vllm
+
 # Catch Linux-only torch / Transformers import failures in CI before an image
 # is published and deployed to a paid GPU Pod.
 RUN PYTHONPATH=/app/src /app/.venv/bin/python -c "from voice_rag.api.main import app; print(app.title)"

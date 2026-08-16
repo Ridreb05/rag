@@ -9,11 +9,11 @@ prompt -> LLM -> response.
 from __future__ import annotations
 
 import logging
+from typing import Protocol
 
 import numpy as np
 
-from voice_rag.pipeline.generation.gemini_service import GeminiGenerationService
-from voice_rag.pipeline.generation.schemas import AnswerResponse, Claim, GenerationRequest, RetrievalCandidate
+from voice_rag.pipeline.generation.schemas import AnswerResponse, Claim, GeneratedAnswer, GenerationRequest, RetrievalCandidate
 from voice_rag.pipeline.guardrails.grounding import GroundingValidator
 from voice_rag.pipeline.guardrails.off_topic import REFUSAL_MESSAGE, OffTopicGate, should_refuse
 from voice_rag.pipeline.guardrails.safety import check_unsafe_input
@@ -54,14 +54,25 @@ def _extractive_answer(trace_id: str, candidates: list[RetrievalCandidate], mode
     )
 
 
+class Generator(Protocol):
+    """What the harness needs from a generation backend — satisfied by both
+    GeminiGenerationService and LocalVllmGenerationService. Kept here rather
+    than imported from either module so the harness does not depend on a
+    specific backend to type-check against."""
+
+    model: str
+
+    def generate(self, request: GenerationRequest, max_tokens: int = ...) -> GeneratedAnswer | None: ...
+
+
 class GenerationHarness:
     def __init__(
         self,
-        generator: GeminiGenerationService | None = None,
+        generator: Generator,
         grounding_validator: GroundingValidator | None = None,
         off_topic_gate: OffTopicGate | None = None,
     ):
-        self.generator = generator or GeminiGenerationService()
+        self.generator = generator
         self.grounding_validator = grounding_validator  # optional — heavy model, load lazily by caller
         self.off_topic_gate = off_topic_gate
 

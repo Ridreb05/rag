@@ -38,7 +38,7 @@ from starlette.background import BackgroundTask
 
 from voice_rag.api.rate_limit import RateLimitMiddleware
 from voice_rag.pipeline.embeddings.service import EmbeddingService
-from voice_rag.pipeline.generation.gemini_service import GeminiGenerationService
+from voice_rag.pipeline.generation.factory import build_generator
 from voice_rag.pipeline.generation.harness import (
     DEADLINE_FALLBACK_FLAG,
     EXTRACTIVE_CONFIDENCE_THRESHOLD,
@@ -213,7 +213,7 @@ async def lifespan(app: FastAPI):
     services.bm25 = Bm25Index(BM25_PATH)
     services.off_topic_gate = _try_build_off_topic_gate() if LOAD_OFF_TOPIC_GATE else None
     services.harness = GenerationHarness(
-        generator=GeminiGenerationService(),
+        generator=build_generator(),
         grounding_validator=grounding_validator,
         off_topic_gate=services.off_topic_gate,
     )
@@ -225,7 +225,7 @@ async def lifespan(app: FastAPI):
     # expired mid-generation on a slower network and silently degraded the
     # refinement back to the same extract it was meant to improve.
     services.refine_harness = GenerationHarness(
-        generator=GeminiGenerationService(total_budget_seconds=REFINE_GENERATION_BUDGET_SECONDS),
+        generator=build_generator(total_budget_seconds=REFINE_GENERATION_BUDGET_SECONDS),
         grounding_validator=grounding_validator,
         off_topic_gate=services.off_topic_gate,
     )
@@ -804,6 +804,16 @@ def health() -> dict:
         "bm25": False,
         "index_complete": False,
         "stt_configured": services.stt is not None,
+        # Informational, not gating: the harness already degrades to
+        # extractive answers on a generation failure, so a down backend is a
+        # real but non-fatal condition — visible here rather than only
+        # discoverable by the mode mix looking wrong.
+        "generation_backend": type(services.harness.generator).__name__,
+        "generation_backend_ready": (
+            services.harness.generator.is_ready()
+            if hasattr(services.harness.generator, "is_ready")
+            else True  # Gemini: a third party's uptime, not this deployment's to report on.
+        ),
     }
     expected_points: int | None = None
     try:

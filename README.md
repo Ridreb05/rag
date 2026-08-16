@@ -183,20 +183,67 @@ stt_ms`) for the full wall-clock cost of a voice query.
    so the deadline *defers* generation rather than cancelling it.
 3. **Confidence-routed answering** — the reranker's top score decides the path:
    - `< 0.2` → **refuse**; retrieval found no real support.
-   - `0.2 – 0.85` → **generate** via Gemini (`gemini-flash-latest`) with structured output
-     (`responseSchema`: `answer_text` plus per-claim `cited_chunk_ids`), making citations
-     machine-checkable rather than parsed from free text.
+   - `0.2 – 0.85` → **generate**, via whichever backend is configured (see
+     [Generation backends](#generation-backends)).
    - `≥ 0.85` → **extractive**; a single passage already answers the question, so the LLM is
      skipped entirely.
-4. **Error recovery** — provider safety blocks (`SAFETY`, `PROHIBITED_CONTENT`, `BLOCKLIST`,
-   `RECITATION`) are treated as guardrail outcomes, not crashes. Gemini is called over raw REST
-   rather than an SDK, so retry/backoff for transient failures (network, 429, 5xx) is implemented
-   explicitly in `gemini_service.py` — exponential backoff, a wall-clock budget, and immediate
-   failure on non-retryable 4xx.
+4. **Error recovery** — provider/model failures are treated as guardrail outcomes, not crashes.
+   Both backends implement retry/backoff for transient failures against a wall-clock budget, and a
+   generation failure degrades to the top reranked passage rather than a 500 — retrieval already
+   succeeded, so that passage is still a grounded answer.
 5. **Grounding validation** — each generated claim is re-checked against its cited evidence with a
    multilingual NLI cross-encoder (`MoritzLaurer/mDeBERTa-v3-base-mnli-xnli`), scored per claim
    rather than as one opaque number. Claims below 0.5 entailment, or with no valid citation, are
    dropped, and the answer is rebuilt from survivors only — never the model's raw prose.
+
+### Generation backends
+
+The generator is a runtime choice (`VOICE_RAG_GENERATION_BACKEND`), not a hardcoded import — the
+harness depends on a `Generator` protocol (`generate(request) -> GeneratedAnswer | None`, `.model`),
+satisfied by either:
+
+| backend | `VOICE_RAG_GENERATION_BACKEND` | where it runs | structured output |
+|---|---|---|---|
+| **Gemini** (default) | `gemini` | remote API | JSON `responseSchema`, per-claim citations from the model |
+| **Local vLLM** | `vllm` | this process's own GPU, via `pipeline/generation/vllm_service.py` | none — see below |
+
+**Why a local model exists at all:** Gemini is a real network hop (~2.1s measured median), which
+two-phase answering works around rather than removes. A model resident on the same GPU, given a
+short prompt, has no network hop to pay — small enough that generation could stop being the reason
+a request needs two-phase answering at all, for the confidence band that reaches it.
+
+**What `LocalVllmGenerationService` does differently, specifically for latency:**
+
+- Only the top 1-2 reranked candidates go into the prompt (`VOICE_RAG_VLLM_CONTEXT_CHUNKS`, default
+  2) — the single largest lever on prefill time, traded against recall on questions that need more
+  than 1-2 passages synthesized together.
+- **No structured-output schema is requested.** Grammar-constrained decoding has real per-token
+  cost, and Gemini pays it so the model can say *which* passage supports each claim. That
+  information is already known here — the prompt contains only the chunks that could possibly be
+  cited — so the service returns one claim citing every chunk placed in context, and lets the
+  existing NLI grounding validator (which already scores a claim against a *list* of candidate
+  evidence texts and picks the best match) do the same job it already does for Gemini's citations.
+  This is not a weaker grounding guarantee — see `vllm_service.py`'s `generate()` docstring.
+- `temperature=0`, `max_tokens` capped (default 20), and Qwen's `enable_thinking` chat-template flag
+  disabled — a reasoning model that thinks before answering can spend its entire token budget on
+  tokens the harness never sees as an answer.
+- Runs as a persistent `vllm serve` process, not started per request; the harness talks to it over
+  localhost HTTP with a small, bounded retry budget (a local failure is the server still loading or
+  out of memory, not network flakiness — retrying gains little).
+- Streaming responses so time-to-first-token is measured, not just total completion time; both are
+  logged per request (`vllm_generation_completed`).
+
+**Deployment:** the CPU Fly demo keeps `gemini` — there is no GPU to run a local model on, and this
+default is unchanged from before this backend existed. The GPU RunPod Pod can opt into `vllm` via
+its Dockerfile/entrypoint (`infrastructure/runpod-entrypoint.sh` starts `vllm serve` in its own venv
+before uvicorn, isolated from the app's own torch install — see that file for why).
+
+**What is and isn't verified:** the harness wiring, retry logic, prompt construction, and claim
+assembly are unit-tested against a mocked vLLM server (`tests/test_vllm_service.py`) and pass. Real
+TTFT/generation-latency numbers on this repo's actual GPU hardware, and the exact
+Qwen3.5-4B-Instruct repo id, are **not yet measured** — that requires a live server on a GPU Pod,
+which this session did not run. Reported here as implemented, not as benchmarked; the Latency
+section above measures the Gemini backend only.
 
 ## 6. Guardrails
 
@@ -319,8 +366,10 @@ volume, which is what makes an on-demand Pod practical rather than a 24/7 cost:
 - `/v1/health` reports ready only when the state manifest **and** Qdrant's exact point count agree,
   so an interrupted upload cannot appear ready merely because its collection exists.
 
-Required secrets: `GEMINI_API_KEY` (startup fails without it) and `SARVAM_API_KEY` (voice returns
-503 without it).
+Required secrets: `SARVAM_API_KEY` (voice returns 503 without it), and `GEMINI_API_KEY` **only**
+when `VOICE_RAG_GENERATION_BACKEND=gemini` (default) — startup fails without it in that
+configuration. Set `VOICE_RAG_GENERATION_BACKEND=vllm` to run generation locally instead (see
+[Generation backends](#generation-backends)); `GEMINI_API_KEY` is not read in that case.
 
 `VOICE_RAG_REQUEST_BUDGET_SECONDS` (default `0.2`) sets the deadline. The default is correct for
 normal operation — two-phase answering means generation still runs, just in phase two. Raising it
@@ -390,7 +439,7 @@ Or `docker compose up` for the two-service (Qdrant + app) topology.
 ## Tests
 
 ```powershell
-uv run pytest -q      # 102 passed, 7 deselected (slow/GPU/provider), 2026-08-16
+uv run pytest -q      # 108 passed, 7 deselected (slow/GPU/provider), 2026-08-16
 uv run pytest -m slow tests/test_ml_integration.py tests/test_gemini_integration.py tests/test_sarvam_integration.py
 ```
 
