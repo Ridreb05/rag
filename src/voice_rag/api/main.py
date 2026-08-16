@@ -64,6 +64,14 @@ INDEX_STATE_PATH = Path(
 # developer may deliberately point the API at a small hand-built collection.
 REQUIRE_COMPLETE_INDEX = os.environ.get("VOICE_RAG_REQUIRE_COMPLETE_INDEX", "0") == "1"
 LOAD_GROUNDING_VALIDATOR = os.environ.get("VOICE_RAG_LOAD_GROUNDING_VALIDATOR", "1") == "1"
+# Building this gate re-embeds a text sample locally at startup (see
+# _try_build_off_topic_gate). On a throttled shared-CPU host that step can
+# stall for many minutes with the process making real but very slow
+# progress — not worth blocking startup for on a small demo index.
+# Confidence-based refusal (LOW_CONFIDENCE_THRESHOLD, in the harness) stays
+# active either way, so this only drops the centroid-based signal, not
+# guardrail coverage entirely.
+LOAD_OFF_TOPIC_GATE = os.environ.get("VOICE_RAG_LOAD_OFF_TOPIC_GATE", "1") == "1"
 # Tuned down from an initial 20: reranking cost scales with candidate count,
 # and dense/sparse/BM25 already agree closely on the top few candidates for
 # a corpus this size, so a smaller K loses negligible recall for a real
@@ -159,7 +167,7 @@ async def lifespan(app: FastAPI):
     services.qdrant_client = get_client(path=None if QDRANT_URL else QDRANT_PATH, url=QDRANT_URL)
     services.collection = collection_name(DEFAULT_LANGUAGE, INDEX_VERSION)
     services.bm25 = Bm25Index(BM25_PATH)
-    services.off_topic_gate = _try_build_off_topic_gate()
+    services.off_topic_gate = _try_build_off_topic_gate() if LOAD_OFF_TOPIC_GATE else None
     services.harness = GenerationHarness(
         generator=GeminiGenerationService(),
         grounding_validator=grounding_validator,

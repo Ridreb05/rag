@@ -7,6 +7,11 @@ __pycache__
 data
 !data/api_smoketest
 reports
+cloudrun-data
+hindi_index_export.tar.gz
+*.wav
+.uv-cache
+.fly
 frontend/node_modules
 frontend/dist
 docs

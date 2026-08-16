@@ -34,33 +34,31 @@ ENV PATH="/root/.local/bin:${PATH}"
 WORKDIR /app
 
 COPY pyproject.toml uv.lock ./
-RUN --mount=type=cache,target=/root/.cache/uv uv sync --frozen --no-dev --no-install-project
-
-# Swap the GPU-pinned torch wheel (pyproject.toml pins +cu118 for the
-# RunPod/Cloud Run GPU deployments) for a CPU-only build. The +cu118 wheel
-# would still run here — torch.cuda.is_available() already gates every GPU
-# use in this codebase — but it bundles CUDA runtime libraries this host
-# will never use, for no reason other than a much larger image.
+# `uv sync` and the torch swap below run in ONE layer, not two. uv.lock pins
+# torch+cu118 (for the GPU RunPod/Cloud Run deployments), which bundles
+# multi-GB CUDA runtime libraries this CPU host never uses — swapping it for
+# the CPU wheel is necessary, but doing that swap in a *separate* `RUN` was
+# a real mistake, not just a style nit: Docker layers are additive, so the
+# GPU wheel's files stay physically present in the earlier layer even after
+# a later layer deletes them, still counted in the final image size. Chained
+# in one RUN, only the post-swap filesystem state is ever committed.
 RUN --mount=type=cache,target=/root/.cache/uv \
+    uv sync --frozen --no-dev --no-install-project && \
     uv pip install --python /app/.venv/bin/python \
     --index-url https://download.pytorch.org/whl/cpu \
     --force-reinstall --no-deps "torch==2.6.0"
 
-# Pre-download BGE-M3 and the reranker at build time instead of on first
-# boot. Measured directly: BGE-M3's file-by-file Hugging Face download alone
-# took 9.5 minutes over this host's runtime network, and the combined time
-# to fetch + load both models pushed the container past its memory budget
-# before FastAPI's lifespan could ever finish (an OOM kill mid-startup, not
-# steady-state — the process needs the downloaded safetensors AND the
-# instantiated model in memory simultaneously while loading). Baking the
-# weights into an image layer means the build pays this cost once; every
-# container boot after that is a cache hit, not a network call.
-RUN /app/.venv/bin/python -c "\
-from FlagEmbedding import BGEM3FlagModel; \
-BGEM3FlagModel('BAAI/bge-m3', use_fp16=False, device='cpu'); \
-from transformers import AutoModelForSequenceClassification, AutoTokenizer; \
-AutoTokenizer.from_pretrained('BAAI/bge-reranker-v2-m3'); \
-AutoModelForSequenceClassification.from_pretrained('BAAI/bge-reranker-v2-m3')"
+# NOT baking BGE-M3 + reranker weights into this image, despite that being
+# the better fix for cold-start time: it pushed the image past a hard
+# uncompressed-size ceiling this account's machines enforce (~8GB;
+# confirmed directly — cutting ~600MB via the single-layer torch fix above
+# did not clear it). The real problem this was solving was an OOM during
+# model loading, not the download itself; that is now fixed by giving the
+# machine enough RAM (see fly.toml) instead. Trade-off, stated plainly: the
+# first boot on a fresh machine still re-downloads ~3.8GB from Hugging Face
+# (measured ~10-20 min over this account's network) instead of being an
+# instant cache hit. auto_stop_machines is off, so this is a one-time cost
+# per machine lifetime, not a per-request or per-restart one.
 
 COPY src/ ./src/
 COPY --from=frontend-builder /app/frontend/dist ./frontend/dist
@@ -82,6 +80,10 @@ ENV VOICE_RAG_INDEX_VERSION=benchmark
 # degrades gracefully without it (guardrails/off_topic + confidence-based
 # refusal stay active either way).
 ENV VOICE_RAG_LOAD_GROUNDING_VALIDATOR=0
+# Measured directly: building this gate (a local CPU re-embed of a text
+# sample) stalled startup for 30+ minutes on this account's throttled
+# shared-CPU machines. Confidence-based refusal remains active without it.
+ENV VOICE_RAG_LOAD_OFF_TOPIC_GATE=0
 
 EXPOSE 8080
 
