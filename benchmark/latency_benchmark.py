@@ -54,6 +54,12 @@ RESULTS_DIR = Path("reports/latency_benchmark")
 # Mirrors api/main.py's BM25_TIMEOUT_SECONDS exactly, so this benchmark
 # measures the pipeline that actually ships, not an unbounded version of it.
 BM25_TIMEOUT_SECONDS = 0.1
+SPARSE_TIMEOUT_SECONDS = 0.1
+# Same reason: api/main.py's request-level deadline governs which answer mode
+# a slow query ends up in, so the benchmark has to apply it too or it reports
+# a distribution the deployed system never produces.
+REQUEST_BUDGET_SECONDS = 0.2
+MIN_GENERATION_BUDGET_SECONDS = 1.5
 
 PERCENTILES = [50, 70, 95, 99, 100]
 
@@ -126,7 +132,11 @@ def run_benchmark(
             ).points,
         )
         (dense_hits, dense_ms) = dense_f.result()
-        (sparse_hits, sparse_ms) = sparse_f.result()
+        try:
+            (sparse_hits, sparse_ms) = sparse_f.result(timeout=SPARSE_TIMEOUT_SECONDS)
+        except FuturesTimeoutError:
+            # Matches api/main.py, same rationale as BM25 below.
+            sparse_hits, sparse_ms = [], SPARSE_TIMEOUT_SECONDS * 1000
         try:
             (bm25_hits, bm25_ms) = bm25_f.result(timeout=BM25_TIMEOUT_SECONDS)
         except FuturesTimeoutError:
@@ -201,7 +211,8 @@ def run_benchmark(
         # Same adaptive gate as api/main.py: skip BM25's extra candidates when
         # the vector searches already produced a decisively confident passage.
         already_decisive = bool(known_scores) and max(known_scores) >= EXTRACTIVE_CONFIDENCE_THRESHOLD
-        if recovery_f is not None and not already_decisive:
+        recovery_fits_budget = (time.perf_counter() - t_total0) < REQUEST_BUDGET_SECONDS
+        if recovery_f is not None and not already_decisive and recovery_fits_budget:
             for point in recovery_f.result():
                 if point.payload and "chunk_id" in point.payload:
                     payload_by_id[point.payload["chunk_id"]] = point.payload
@@ -259,7 +270,15 @@ def run_benchmark(
             for cid, t, s in ranked[:10]
         ]
 
-        resp = harness.answer(f"bench-{i}", query_text, language, candidates, query_embedding=q_embed.dense[0])
+        resp = harness.answer(
+            f"bench-{i}",
+            query_text,
+            language,
+            candidates,
+            query_embedding=q_embed.dense[0],
+            remaining_budget_seconds=REQUEST_BUDGET_SECONDS - (time.perf_counter() - t0),
+            min_generation_budget_seconds=MIN_GENERATION_BUDGET_SECONDS,
+        )
         e2e_timings.append((time.perf_counter() - t0) * 1000)
         mode_counts[resp.mode] = mode_counts.get(resp.mode, 0) + 1
 

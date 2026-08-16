@@ -125,6 +125,55 @@ def test_generator_failure_degrades_to_extractive_instead_of_erroring():
     assert "generation_unavailable_extractive_fallback" in resp.guardrail_flags
 
 
+def test_generation_skipped_when_remaining_budget_is_too_small():
+    """The request-level deadline must be able to pre-empt generation, not just
+    time it out after the fact — retrieval's top passage is already grounded,
+    so the budget is respected by answering extractively rather than by
+    starting a call that cannot finish in time."""
+    mid = (EXTRACTIVE_CONFIDENCE_THRESHOLD + LOW_CONFIDENCE_THRESHOLD) / 2
+    # Would raise if generation were reached, proving it was never attempted.
+    harness = GenerationHarness(generator=ExplodingGenerator(AssertionError("generation must not run")))
+    candidates = [make_candidate(rerank_score=mid, text="Grounded passage text.")]
+
+    resp = harness.answer(
+        "t8",
+        "some query",
+        "en",
+        candidates,
+        remaining_budget_seconds=0.05,
+        min_generation_budget_seconds=1.5,
+    )
+
+    assert resp.mode == "extractive"
+    assert resp.answer_text == "Grounded passage text."
+    assert "deadline_exceeded_extractive_fallback" in resp.guardrail_flags
+
+
+def test_generation_still_runs_when_budget_is_sufficient():
+    """The deadline must not disable generation outright — with budget to
+    spare, the generative path is still taken."""
+    mid = (EXTRACTIVE_CONFIDENCE_THRESHOLD + LOW_CONFIDENCE_THRESHOLD) / 2
+    generated = GeneratedAnswer(
+        answer_text="Generated answer.",
+        claims=[GeneratedClaim(text="Generated answer.", cited_chunk_ids=["c1"])],
+    )
+    gen = FakeGenerator(response=generated)
+    harness = GenerationHarness(generator=gen)
+    candidates = [make_candidate(rerank_score=mid, text="Grounded passage text.")]
+
+    resp = harness.answer(
+        "t9",
+        "some query",
+        "en",
+        candidates,
+        remaining_budget_seconds=30.0,
+        min_generation_budget_seconds=1.5,
+    )
+
+    assert resp.mode == "generative"
+    assert gen.calls == 1
+
+
 def test_generator_failure_with_no_candidates_refuses():
     """With nothing retrieved there is no grounded fallback, so refuse rather
     than invent an answer."""

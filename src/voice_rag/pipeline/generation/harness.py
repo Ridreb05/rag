@@ -67,6 +67,8 @@ class GenerationHarness:
         query_language: str,
         candidates: list[RetrievalCandidate],
         query_embedding: np.ndarray | None = None,
+        remaining_budget_seconds: float | None = None,
+        min_generation_budget_seconds: float = 0.0,
     ) -> AnswerResponse:
         unsafe_category = check_unsafe_input(query_final)
         if unsafe_category is not None:
@@ -84,6 +86,23 @@ class GenerationHarness:
 
         if retrieval_confidence >= EXTRACTIVE_CONFIDENCE_THRESHOLD:
             return _extractive_answer(trace_id, candidates, self.generator.model)
+
+        # Deadline check, before committing to the one stage that can blow the
+        # request's budget. Retrieval has already produced a ranked, grounded
+        # passage by this point, so running out of budget is not a failure
+        # state — it means answering with what retrieval found instead of
+        # spending seconds on an LLM call to phrase it more fluently. The
+        # downgrade is flagged so it is visible in the response, not silent.
+        if remaining_budget_seconds is not None and remaining_budget_seconds < min_generation_budget_seconds:
+            logger.info(
+                "generation_skipped_over_budget trace_id=%s remaining_s=%.3f required_s=%.3f",
+                trace_id,
+                remaining_budget_seconds,
+                min_generation_budget_seconds,
+            )
+            resp = _extractive_answer(trace_id, candidates, self.generator.model)
+            resp.guardrail_flags = ["deadline_exceeded_extractive_fallback"]
+            return resp
 
         req = GenerationRequest(
             trace_id=trace_id,

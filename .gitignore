@@ -17,7 +17,17 @@ data/
 # Per-language JSON stats from voice_rag.pipeline.ingestion.analyze —
 # regenerate via the command in README.md rather than tracking generated
 # output.
-reports/
+#
+# Exception: the latency benchmark result README.md cites as evidence for its
+# P50/P70/P100 numbers. Tracked so those claims are checkable from a clean
+# clone instead of asking the reader to take them on trust and re-run a long
+# benchmark against a 964,603-chunk index. Negated level by level because git
+# does not descend into an excluded directory. The .md rendering of the same
+# data stays ignored — README.md is the repo's only markdown doc.
+reports/*
+!reports/latency_benchmark/
+reports/latency_benchmark/*
+!reports/latency_benchmark/*.json
 
 # Secrets
 .env

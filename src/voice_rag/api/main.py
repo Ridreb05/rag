@@ -91,6 +91,30 @@ RERANK_CANDIDATES = 8
 # pathological query for a bounded worst case, the same trade already made
 # for generation's retry budget.
 BM25_TIMEOUT_SECONDS = 0.1
+# Same bound, same reason, for Qdrant's sparse (learned-lexical) search.
+# Measured on the full 964,603-chunk index: p50 6.5ms but p100 386.0ms — the
+# single largest contributor to retrieval's worst case, and the same
+# pathology as BM25's tail, since a learned-sparse query is also a union over
+# per-term posting lists and high-document-frequency Hindi terms produce
+# very long ones. Dense is deliberately left unbounded: it is the primary
+# semantic signal and the only one guaranteed to return something for any
+# query, and its own tail is far smaller (p100 106.3ms) because HNSW's cost
+# does not scale with term frequency.
+SPARSE_TIMEOUT_SECONDS = 0.1
+# The task's end-to-end target. Treated as a real wall-clock deadline carried
+# through the request rather than an aspiration measured after the fact: each
+# stage past retrieval checks how much of the budget is actually left and
+# picks the most complete answer that still fits. Every degradation step has
+# a grounded answer to fall back to (the top reranked passage), so respecting
+# the deadline costs answer *richness* on slow queries, never correctness.
+REQUEST_BUDGET_SECONDS = 0.2
+# Floor for attempting a generative answer. Measured real Gemini generation is
+# ~2.1s median, so a generative call never fits a 200ms budget — this exists
+# so the routing decision is made by measured remaining time rather than
+# hardcoded pessimism: raise REQUEST_BUDGET_SECONDS (e.g. for a batch/offline
+# deployment that does not need interactivity) and generation re-enables
+# itself with no other change.
+MIN_GENERATION_BUDGET_SECONDS = 1.5
 MAX_AUDIO_BYTES = 15 * 1024 * 1024
 # Sarvam's BCP-47 codes; "or" -> "od-IN" is the one exception to the naive <code>-IN pattern.
 SARVAM_BCP47 = {
@@ -286,7 +310,11 @@ def _answer_query(
         ).points
     )
     dense_hits = dense_future.result()
-    sparse_hits = sparse_future.result()
+    try:
+        sparse_hits = sparse_future.result(timeout=SPARSE_TIMEOUT_SECONDS)
+    except FuturesTimeoutError:
+        logger.warning("sparse_search_timeout trace_id=%s budget_s=%.2f", trace_id, SPARSE_TIMEOUT_SECONDS)
+        sparse_hits = []
     try:
         bm25_hits = bm25_future.result(timeout=BM25_TIMEOUT_SECONDS)
     except FuturesTimeoutError:
@@ -361,7 +389,12 @@ def _answer_query(
         # Below that bar is exactly where a lexical exact-match is most likely
         # to be the right answer, so that is where the work gets spent.
         already_decisive = bool(scored) and max(s for _, _, s in scored) >= EXTRACTIVE_CONFIDENCE_THRESHOLD
-        if recovery_future is not None and not already_decisive:
+        # Second gate on the same work, for the same reason as the deadline in
+        # the harness: BM25 recovery is a recall improvement, not a
+        # correctness requirement, so it is the right thing to drop first when
+        # a query has already spent most of its budget getting here.
+        recovery_fits_budget = (time.perf_counter() - t_start) < REQUEST_BUDGET_SECONDS
+        if recovery_future is not None and not already_decisive and recovery_fits_budget:
             try:
                 for point in recovery_future.result():
                     if point.payload and "chunk_id" in point.payload:
@@ -398,7 +431,19 @@ def _answer_query(
         rerank_score_by_chunk_id = {c.chunk_id: c.rerank_score for c in candidates if c.rerank_score is not None}
 
         t0 = time.perf_counter()
-        resp = services.harness.answer(trace_id, query_text, language, candidates, query_embedding=q_embed.dense[0])
+        resp = services.harness.answer(
+            trace_id,
+            query_text,
+            language,
+            candidates,
+            query_embedding=q_embed.dense[0],
+            # What is actually left of the request's budget after retrieval and
+            # reranking have already spent from it — not a fresh per-stage
+            # timeout, which is how a pipeline of individually-bounded stages
+            # still ends up with an unbounded total.
+            remaining_budget_seconds=REQUEST_BUDGET_SECONDS - (time.perf_counter() - t_start),
+            min_generation_budget_seconds=MIN_GENERATION_BUDGET_SECONDS,
+        )
         timings["generation_ms"] = (time.perf_counter() - t0) * 1000
 
     timings["total_ms"] = (time.perf_counter() - t_start) * 1000
