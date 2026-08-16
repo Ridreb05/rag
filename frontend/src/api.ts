@@ -33,6 +33,15 @@ export const refineAnswer = (traceId: string) =>
     body: JSON.stringify({ trace_id: traceId }),
   });
 
+/** Translates an answer to English for display. Deliberately a separate call:
+ *  it must never enter the latency budget the query itself is measured against. */
+export const translateText = (text: string) =>
+  api<{ text: string; latency_ms: Record<string, number> }>("/v1/translate", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ text }),
+  });
+
 export const submitVoice = (audio: Blob) => {
   const data = new FormData();
   data.append("audio", audio, `voice-query.${audio.type.includes("mp4") ? "mp4" : "webm"}`);

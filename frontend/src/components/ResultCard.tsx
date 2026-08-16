@@ -1,7 +1,9 @@
 import * as Accordion from "@radix-ui/react-accordion";
 import * as Collapsible from "@radix-ui/react-collapsible";
 import { motion } from "framer-motion";
-import { ChevronDown, Clock3, FileText, ShieldCheck, Sparkles, Volume2, Zap } from "lucide-react";
+import { ChevronDown, Clock3, FileText, Languages, ShieldCheck, Sparkles, Volume2, Zap } from "lucide-react";
+import { useEffect, useState } from "react";
+import { translateText } from "../api";
 import { formatMs, isVoice, SUMMARY_LATENCY_KEYS, type AnswerMode, type Result } from "../types";
 
 const modeCopy: Record<AnswerMode, { label: string; eyebrow: string }> = {
@@ -34,6 +36,40 @@ export function ResultCard({ result, refining = false }: { result: Result; refin
   const sttMs = result.latency_ms.stt_ms;
   const withinBudget = budgetMs !== undefined && pipelineMs <= budgetMs;
   const budgetUsedPct = budgetMs ? Math.min(100, (pipelineMs / budgetMs) * 100) : 0;
+
+  const [showEnglish, setShowEnglish] = useState(false);
+  const [translation, setTranslation] = useState<string | null>(null);
+  const [translating, setTranslating] = useState(false);
+  const [translateError, setTranslateError] = useState<string | null>(null);
+
+  // A new answer (or a phase-two refinement replacing this one) invalidates any
+  // translation held for the previous text.
+  useEffect(() => {
+    setShowEnglish(false);
+    setTranslation(null);
+    setTranslateError(null);
+  }, [result.trace_id, result.answer_text]);
+
+  const toggleTranslation = () => {
+    if (showEnglish) {
+      setShowEnglish(false);
+      return;
+    }
+    // Fetched once and kept: toggling back and forth must not re-run the model.
+    if (translation) {
+      setShowEnglish(true);
+      return;
+    }
+    setTranslating(true);
+    setTranslateError(null);
+    translateText(result.answer_text)
+      .then((res) => {
+        setTranslation(res.text);
+        setShowEnglish(true);
+      })
+      .catch(() => setTranslateError("Translation unavailable"))
+      .finally(() => setTranslating(false));
+  };
 
   return (
     <motion.section
@@ -78,9 +114,40 @@ export function ResultCard({ result, refining = false }: { result: Result; refin
         className="flex gap-4 p-6 sm:gap-6 sm:p-8"
       >
         <div className="shrink-0 font-heading text-3xl font-black text-clay-accentAlt sm:text-4xl">A.</div>
-        <p className="max-w-3xl font-script text-xl leading-relaxed text-clay-foreground [direction:auto] [unicode-bidi:plaintext] sm:text-2xl">
-          {result.answer_text}
-        </p>
+        <div className="min-w-0 flex-1">
+          <p className="max-w-3xl font-script text-xl leading-relaxed text-clay-foreground [direction:auto] [unicode-bidi:plaintext] sm:text-2xl">
+            {showEnglish && translation ? translation : result.answer_text}
+          </p>
+
+          {result.mode !== "refused" && (
+            <div className="mt-4 flex flex-wrap items-center gap-3">
+              <button
+                type="button"
+                onClick={toggleTranslation}
+                disabled={translating}
+                aria-pressed={showEnglish}
+                className={`inline-flex items-center gap-2 rounded-full px-4 py-2 font-body text-xs font-bold uppercase tracking-wide transition-all duration-150 disabled:opacity-60 ${
+                  showEnglish
+                    ? "bg-clay-accent text-white shadow-clayButton"
+                    : "bg-clay-pressed text-clay-foreground shadow-clayPressed hover:bg-white"
+                }`}
+              >
+                <Languages size={14} className={translating ? "animate-pulse" : ""} />
+                {translating ? "Translating…" : showEnglish ? "Show original" : "Translate to English"}
+              </button>
+              {showEnglish && translation && (
+                <span className="font-body text-[10px] uppercase tracking-wide text-clay-muted">
+                  Machine translation · citations below point at the original passages
+                </span>
+              )}
+              {translateError && (
+                <span className="font-body text-[10px] uppercase tracking-wide text-clay-warning">
+                  {translateError}
+                </span>
+              )}
+            </div>
+          )}
+        </div>
       </motion.div>
 
       <motion.div

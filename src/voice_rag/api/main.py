@@ -280,6 +280,18 @@ class RefineRequest(BaseModel):
     trace_id: str = Field(min_length=1, max_length=64)
 
 
+class TranslateRequest(BaseModel):
+    # Bounded because this reaches the model: an unbounded field here is an
+    # open text-generation endpoint. The per-IP rate limiter is the other half
+    # of that; answers this translates are one or two sentences.
+    text: str = Field(min_length=1, max_length=4000)
+
+
+class TranslateResponse(BaseModel):
+    text: str
+    latency_ms: dict[str, float]
+
+
 @dataclass
 class _PendingRefinement:
     """Everything needed to generate an answer that retrieval already earned.
@@ -672,6 +684,41 @@ def refine_query(req: RefineRequest) -> QueryResponse:
         latency_ms={"generation_ms": generation_ms, "total_ms": generation_ms},
         refinement_available=False,
     )
+
+
+@app.post("/v1/translate", response_model=TranslateResponse)
+def translate(req: TranslateRequest) -> TranslateResponse:
+    """Translates an answer to English for a reader who does not read the
+    corpus language.
+
+    A separate endpoint rather than a field on the query response, for the
+    same reason refinement is: it must not enter the 200ms budget. Nothing
+    calls it unless a reader asks, so it runs on the refinement harness's
+    generator, which carries the longer wall-clock budget.
+
+    It reuses the model already loaded for generation — no translation API,
+    no additional credential. Backends that do not offer translation degrade
+    to a clear 501 rather than a confusing 500."""
+    generator = services.refine_harness.generator
+    if not hasattr(generator, "translate_to_english"):
+        raise HTTPException(
+            status_code=501,
+            detail=f"{type(generator).__name__} does not support translation",
+        )
+
+    t0 = time.perf_counter()
+    try:
+        translated = generator.translate_to_english(req.text)
+    except Exception as exc:
+        # Never a 500 for a display aid: the caller already has the original
+        # answer on screen and keeps it.
+        logger.warning("translation_failed error=%s", exc)
+        raise HTTPException(status_code=503, detail="translation unavailable") from exc
+    elapsed = (time.perf_counter() - t0) * 1000
+
+    if not translated:
+        raise HTTPException(status_code=503, detail="translation returned nothing")
+    return TranslateResponse(text=translated, latency_ms={"translation_ms": elapsed, "total_ms": elapsed})
 
 
 class VoiceQueryResponse(QueryResponse):

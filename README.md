@@ -217,6 +217,14 @@ stt_ms`) for the full wall-clock cost of a voice query.
    rather than as one opaque number. Claims below 0.5 entailment, or with no valid citation, are
    dropped, and the answer is rebuilt from survivors only — never the model's raw prose.
 
+**Translation for readers.** `POST /v1/translate` renders an answer in English on demand, using
+the model already resident on the GPU rather than a translation API — no extra credential, no
+network hop. It is a separate endpoint for the same reason refinement is: it must never enter the
+200ms budget, and nothing calls it unless a reader asks. The frontend exposes it as a toggle on the
+answer card. Worth being precise about what it is: a *display* aid. The English text is not
+re-grounded against the evidence, and the citations shown alongside still point at the
+original-language passages, which remain the record of what was retrieved.
+
 Thresholds are environment-overridable (`VOICE_RAG_LOW_CONFIDENCE_THRESHOLD`,
 `VOICE_RAG_EXTRACTIVE_THRESHOLD`, `VOICE_RAG_ENTAILMENT_THRESHOLD`) so routing can be tuned against
 a running deployment rather than by rebuilding an image.
@@ -441,7 +449,7 @@ failing. Or `docker compose up` for the two-service (Qdrant + app) topology.
 ## Tests
 
 ```powershell
-uv run pytest -q      # 105 passed, 6 deselected (slow/GPU/provider), 2026-08-17
+uv run pytest -q      # 110 passed, 6 deselected (slow/GPU/provider), 2026-08-17
 uv run pytest -m slow tests/test_ml_integration.py tests/test_sarvam_integration.py
 ```
 

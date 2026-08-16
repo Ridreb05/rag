@@ -209,6 +209,48 @@ class LocalVllmGenerationService:
             raise last_exc
         raise TimeoutError(f"vLLM generation exceeded its {self.total_budget_seconds}s budget for trace_id={trace_id}")
 
+    def translate_to_english(self, text: str, trace_id: str = "translate", max_tokens: int = 200) -> str:
+        """Translates an answer for a reader who does not read the corpus
+        language. Deliberately reuses the model already resident on the GPU
+        rather than adding a translation API: no new credential, no network
+        hop, and the texts involved are one or two sentences.
+
+        Never called on the query path — the caller invokes it only when a
+        reader asks for it, so it sits outside the request's latency budget
+        entirely and can afford a far larger token cap than answering does.
+
+        Note this is a *display* aid: the English text is not re-grounded
+        against the evidence, and the citations shown alongside it still
+        point at the original-language passages, which remain the record of
+        what was actually retrieved."""
+        payload: dict = {
+            "model": self.model,
+            "messages": [
+                {
+                    "role": "system",
+                    "content": (
+                        "Translate the user's text to English. Reply with the translation only — "
+                        "no preamble, no quotes, no commentary. If it is already English, repeat it unchanged."
+                    ),
+                },
+                {"role": "user", "content": text},
+            ],
+            "max_tokens": max_tokens,
+            "temperature": 0.0,
+            "stream": True,
+            "chat_template_kwargs": {"enable_thinking": False},
+        }
+        translated, ttft_ms, total_ms = self._stream_with_retries(payload, trace_id=trace_id)
+        logger.info(
+            "vllm_translation_completed trace_id=%s ttft_ms=%.1f total_ms=%.1f chars_in=%d chars_out=%d",
+            trace_id,
+            ttft_ms,
+            total_ms,
+            len(text),
+            len(translated),
+        )
+        return translated.strip()
+
     def generate(self, request: GenerationRequest, max_tokens: int | None = None) -> GeneratedAnswer | None:
         """Returns exactly one claim citing every chunk placed in context,
         not chunks the model names itself. This is not a weaker grounding
