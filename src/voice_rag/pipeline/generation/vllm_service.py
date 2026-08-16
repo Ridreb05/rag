@@ -91,15 +91,22 @@ class LocalVllmGenerationService:
         self.context_chunks = context_chunks if context_chunks is not None else int(
             os.environ.get("VOICE_RAG_VLLM_CONTEXT_CHUNKS", "2")
         )
-        # Decode time is linear in this number — it is the most direct latency
-        # lever the service owns. Sized against the measured budget rather than
-        # picked round: ~144ms remains for generation after P50 retrieval, and
-        # FP8 weights sustain ~200 tok/s on this GPU, so ~20 tokens is what
-        # fits once time-to-first-token is accounted for. Raising it trades
-        # directly against the 200ms target; lowering it truncates Hindi
-        # answers, which tokenize to roughly 2-4 tokens per word.
+        # Decode time is linear in this number — the most direct latency lever
+        # this service owns. Fitted to measurement rather than chosen round:
+        # on the deployment, 20 tokens cost 190ms of a 163ms budget (200ms
+        # target minus 37ms measured retrieval). Solving that against a fixed
+        # per-request overhead of 40-60ms — HTTP round trip, queueing,
+        # tokenisation and prefill, none of which shrink with fewer output
+        # tokens — puts marginal cost at ~6.5-7.5ms per token. 14 tokens lands
+        # inside budget across that whole range; 16 only does at the optimistic
+        # end.
+        #
+        # This is the sharpest quality trade in the system. Hindi tokenises at
+        # roughly 2-4 tokens per word, so 14 tokens is a short sentence, and
+        # answers needing more will truncate. Raise it if answers read clipped
+        # and accept the latency, or raise the whole budget instead.
         self.max_tokens = max_tokens if max_tokens is not None else int(
-            os.environ.get("VOICE_RAG_VLLM_MAX_TOKENS", "20")
+            os.environ.get("VOICE_RAG_VLLM_MAX_TOKENS", "14")
         )
         self.max_retries = max_retries
         self.backoff_base_seconds = backoff_base_seconds

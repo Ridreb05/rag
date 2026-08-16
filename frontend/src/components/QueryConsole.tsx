@@ -30,7 +30,7 @@ export function QueryConsole({
   onToggleRecording,
 }: QueryConsoleProps) {
   return (
-    <section className="mx-auto w-[min(100%-32px,1280px)] py-10" aria-label="Ask the knowledge corpus">
+    <section className="w-full" aria-label="Ask the knowledge corpus">
       <div className="mb-4 flex items-center gap-3 font-body text-xs font-bold uppercase tracking-widest text-clay-muted">
         <span className="text-clay-accent">Live console</span>
         <i className="h-px flex-1 bg-clay-accent/15" />

@@ -7,7 +7,7 @@ export function LoadingCard({ voice }: { voice: boolean }) {
       initial={{ opacity: 0, y: 24 }}
       animate={{ opacity: 1, y: 0 }}
       exit={{ opacity: 0, y: -12 }}
-      className="mx-auto my-10 flex w-[min(100%-32px,1200px)] flex-col items-center gap-6 rounded-[32px] bg-white/70 p-8 text-center shadow-clayCard backdrop-blur-xl sm:flex-row sm:gap-8 sm:p-10 sm:text-left"
+      className="flex w-full flex-col items-center gap-6 rounded-[32px] bg-white/70 p-8 text-center shadow-clayCard backdrop-blur-xl sm:flex-row sm:gap-8 sm:p-10 sm:text-left"
     >
       <div className="relative grid h-24 w-24 shrink-0 place-items-center rounded-full bg-gradient-to-br from-[#A78BFA] to-[#7C3AED] text-white shadow-clayButton">
         <Search size={30} />
