@@ -24,6 +24,11 @@ Both a typed text query (`POST /v1/query`) and a recorded voice query (`POST /v1
 multipart audio) run the same retrieval → guardrail → generation path; voice just adds a Sarvam
 transcription step in front.
 
+Answering is **two-phase**, because a live LLM call and a 200ms budget cannot share one response:
+phase one returns a grounded, cited answer inside the budget (deployed P50 **55.8ms**, 150/150
+under 200ms), and phase two (`POST /v1/query/refine`) upgrades it with Gemini's synthesis a few
+seconds later. See [Two-phase answering](#two-phase-answering--how-200ms-and-a-real-llm-coexist).
+
 ## Speech-to-text
 
 **Sarvam** (`saarika` STT REST API), chosen per the task's "Sarvam or ElevenLabs, pick one"
@@ -59,6 +64,27 @@ embedding model's own tokenizer (to avoid a heavy `transformers` dependency in t
 itself), verified against real corpus samples to be an adequate approximation, not presented as
 an exact token count.
 
+**What the strategies actually did to this corpus**, counted across all 964,603 indexed chunks
+rather than asserted:
+
+| strategy | chunks | share |
+|---|---:|---:|
+| `whole_passage` | 951,816 | 98.7% |
+| `fixed_token_fallback` | 6,606 | 0.7% |
+| `sentence_aware` | 6,181 | 0.6% |
+
+953,388 passages produced 964,603 chunks — **1.012 chunks per passage**, with a median chunk of 56
+tokens (p90 94, p99 246, max 512).
+
+Read that honestly: **on this dataset, chunking is a no-op 98.7% of the time.** That is the
+correct outcome, not a missing feature — MSMARCO-XI ships pre-segmented passages that are already
+retrieval-sized, and splitting a 56-token passage would fragment context and hurt retrieval for no
+gain. The splitting strategies exist for the 1.3% that genuinely exceed the budget, and the
+decision of *which* passages those are is made per passage from measured token counts, not
+assumed. Pointed at long-form documents, the same code splits the overwhelming majority instead —
+that is what the `level`/`parent_id` hierarchical hook is reserved for, and it is inert here
+because this dataset has no document/section structure to exploit.
+
 ## Retrieval
 
 Three independent signals run concurrently per query and get fused, not just one:
@@ -85,7 +111,9 @@ sees them.
    pass.
 2. **Deadline-aware routing** — the harness is given what remains of the request's 200ms budget
    and will not start a generation call it cannot finish in time, degrading to the top reranked
-   passage instead (flagged `deadline_exceeded_extractive_fallback`, never silent). See Latency.
+   passage instead (flagged `deadline_exceeded_extractive_fallback`, never silent). That flag is
+   also what makes the answer eligible for phase-two refinement, so the deadline defers generation
+   rather than cancelling it — see [Two-phase answering](#two-phase-answering--how-200ms-and-a-real-llm-coexist).
 3. **Confidence-routed answering** — the reranker's top score decides the path:
    - `< 0.2` → refuse outright (below this, retrieval didn't find real support).
    - `0.2 – 0.85` → generate, via Gemini (`gemini-flash-latest`) with structured output
@@ -128,22 +156,39 @@ The system is built to know when *not* to answer, not just how to answer:
 
 ## Latency
 
-Measured with `benchmark/latency_benchmark.py` against a real Qdrant server running the actual
-deployed index — Hindi, index version `full1`, 964,603 chunks, the same artifact baked into
-`Dockerfile.cloudrun` — not a smaller stand-in index. 1000 queries for the retrieval sub-stage,
-150 for the full window, all reported including the slow ones, not a best-case sample.
-Hardware: **RTX 4060 Laptop GPU**, Qdrant v1.13.4 in Docker on the same host.
+### Headline: measured against the live deployment
 
-**The 200ms window** — chunking + vector DB retrieval + through to final output, i.e. the full
-measured process the task asks about (`pipeline_ms`), n=150:
+The primary numbers come from the **deployed GPU Pod itself** — real HTTPS requests to
+`POST /v1/query`, full 964,603-chunk `full1` index, RTX 4090, with the API's own 20 req/60s rate
+limiter left enabled rather than bypassed for the measurement. The figure is the server's own
+`pipeline_ms`, so it excludes internet round-trip to the machine running the benchmark but
+includes every cost the deployment actually pays. n=150.
 
 | | P50 | P70 | P100 |
 |---|---|---|---|
-| **ms** | 74.1 | 79.0 | **131.5** |
+| **ms** | **55.8** | **61.2** | **172.8** |
 
-**All three under the 200ms target, worst case included.** It is met by treating 200ms as a real
-wall-clock deadline carried through the request rather than something measured after the fact —
-see "Meeting the deadline" below for exactly what that costs.
+**150 of 150 queries completed inside the 200ms budget — worst case included.** Mode mix: 124
+extractive, 26 refused. Raw output: `reports/latency_benchmark/hi_full1_deployed.json`.
+
+Of those 150, **28 were offered a phase-two refinement** (see Two-phase answering): 14 produced a
+generative answer, and 14 were **refused after generation** because the grounding check rejected
+the claims. Phase two costs P50 2.76s / P100 4.11s and is deliberately outside the budget —
+nobody waits on it.
+
+### Cross-checked in-process
+
+`benchmark/latency_benchmark.py` measures the same pipeline in-process against a local Qdrant
+server, which isolates stage-by-stage cost. Hardware: RTX 4060 Laptop GPU. 1000 queries for the
+retrieval sub-stage, 150 for the full window — all reported, including the slow ones, not a
+best-case sample.
+
+| | P50 | P70 | P100 |
+|---|---|---|---|
+| **ms** | 74.1 | 79.0 | 131.5 |
+
+Slower at P50 than the deployment above because the 4060 Laptop is a slower GPU than the 4090 —
+same code, same index. Both are reported rather than only the flattering one.
 
 **Retrieval sub-stage only** (embed → dense+sparse+BM25 → RRF fuse → rerank), the largest slice of
 that window, broken out so the cost is attributable rather than a single opaque total, n=1000:
@@ -151,12 +196,6 @@ that window, broken out so the cost is attributable rather than a single opaque 
 | | P50 | P70 | P100 |
 |---|---|---|---|
 | **ms** | 84.9 | 95.2 | 336.4 |
-
-Both tables above are measured in-process by the benchmark harness. Cross-checked through the real
-HTTP API as well (`POST /v1/query`, same full index, same GPU, 30 warm requests): P50 94.5ms, P70
-122.8ms, max 367.5ms, **29 of 30 inside the 200ms budget** — higher than the in-process figures, as
-expected once FastAPI/JSON/HTTP overhead is included, and reported rather than quietly omitted in
-favour of the lower in-process number.
 
 Retrieval's own P100 is the one number still above target: a rare query where several stages hit
 their tails at once. It is bounded (was 623.3ms before the BM25 bound, 457.9ms before the sparse
@@ -190,33 +229,50 @@ transcription sit ahead of the measured window. It is still reported, never hidd
 the response and on the result card, and `total_ms` (= `pipeline_ms + stt_ms`) for the full
 wall-clock cost of a voice query.
 
-### Meeting the deadline — and what it costs
+## Two-phase answering — how <200ms and a real LLM coexist
 
-`REQUEST_BUDGET_SECONDS = 0.2` in `api/main.py` is a deadline propagated through the request. Each
-stage past retrieval checks what is actually left of the budget and picks the most complete answer
-that still fits. Every degradation step has a grounded answer to fall back to — the top reranked
-passage — so respecting the deadline costs answer *richness*, never correctness or grounding.
+A live LLM call and a 200ms budget cannot both fit in one response. Measured Gemini generation is
+~2.1s median (P50 2.76s from the deployment); no deadline arithmetic makes that fit 200ms. The
+usual ways out are to drop generation (fast, but then it is not really RAG) or to accept a
+multi-second P100 (real RAG, misses the target). This system does neither.
 
-**The honest consequence: at a 200ms budget the LLM never runs.** Real measured Gemini generation
-is ~2.1s median; no deadline arithmetic makes that fit 200ms. So under the shipped default, every
-query that would have been generative is answered extractively instead — mode mix over the 150
-measured queries is 122 extractive, 28 refused, 0 generative, and those extractive answers are
-real cited passages, not degraded output. This is a genuine trade, not a metric trick, and it is
-stated rather than buried: **the sub-200ms number and a live LLM call are mutually exclusive, and
-this configuration chooses the deadline.**
+**Phase one** answers from what retrieval already earned, inside the budget:
 
-With the deadline raised so generation runs (`VOICE_RAG_REQUEST_BUDGET_SECONDS=10`), the same
-pipeline on the same index previously measured P50 80.4ms / P70 110.5ms / P100 3434.5ms, mode mix
-96 extractive / 39 refused / 15 generative — P50 and P70 still well inside target, P100 dominated
-entirely by the Gemini network round-trip. Both configurations are real and neither is a special
-"demo mode": the budget is a single environment variable, and nothing else about the pipeline
-changes with it. Latency numbers here are the default (`0.2`); a walkthrough of the generative
-path wants the raised one.
+1. `REQUEST_BUDGET_SECONDS` (default `0.2`) is a deadline carried through the request — not a
+   per-stage timeout, since a pipeline of individually-bounded stages still has an unbounded total.
+2. Before committing to generation, the harness checks what is actually *left* of that budget. If
+   an LLM call cannot finish in time, it returns the top reranked passage instead — a grounded,
+   cited answer, flagged `deadline_exceeded_extractive_fallback` so the downgrade is visible.
 
-The genuinely better fix, not implemented here: return the sub-200ms extractive answer immediately
-and stream the generated refinement in afterwards, so the deadline and the LLM stop competing.
-That is a two-phase response API plus frontend work, and is called out as future work rather than
-claimed.
+**Phase two** then does the work that did not fit. `POST /v1/query/refine` re-runs generation
+against the candidates the request already retrieved and reranked, and the UI swaps the synthesized
+answer into the same card. It carries no deadline: nobody is blocked on it, because the user
+already has an answer.
+
+The result, measured on the deployment: **the response a user waits for is P50 55.8ms / P100
+172.8ms, 150/150 inside budget** — and 14 of the 28 eligible queries still received a real
+generative answer a few seconds later.
+
+**Refinement is offered only when generation was skipped for *time*.** A high-confidence
+extractive answer (`≥0.85`) is never refined — the router skipped the LLM because a single passage
+already answers the question, not because it ran out of budget. A refusal is not refined either:
+there is nothing grounded to improve.
+
+Two details worth stating because they are where this design gets fragile:
+
+- **Phase two gets its own generator with a 45s retry budget**, not the in-request 8s. Measured
+  directly: the 8s budget expired mid-generation on a slower network and degraded the refinement
+  back into the same extract it existed to improve. A budget sized for a caller who is waiting is
+  the wrong budget for a caller who is not.
+- **Pending refinements are TTL'd (5 min) and bounded (256)**. A dict keyed by a client-supplied
+  `trace_id` is otherwise a memory leak. It is per-process by nature, so with multiple workers a
+  refine can land on a worker that never saw the query; that returns 404 and the client simply
+  keeps the fast answer already on screen.
+
+Guardrails apply in phase two exactly as in phase one — and this is where they earn their keep.
+Of the 28 refinements in the deployed run, **14 were refused after generation** because the NLI
+grounding check rejected the model's claims. The system generated, checked its own output against
+the retrieved evidence, and declined to show half of it.
 
 ### Engineering notes
 
@@ -276,11 +332,14 @@ into a single running total that no single benchmark run would reproduce:
   and its tail is far smaller (p100 106.3ms) because HNSW's cost doesn't scale with term
   frequency. Retrieval P100 457.9ms → 336.4ms as a result.
 - **The 200ms target became a real deadline instead of a post-hoc measurement — full-window P100
-  3434.5ms → 131.5ms.** Individually bounding each stage still allows an unbounded total, so the
-  budget is now carried through the request: the harness receives what is actually left of it and
-  pre-empts generation it cannot finish in time, falling back to the already-retrieved top
-  passage. See "Meeting the deadline" above for the honest cost — under a 200ms budget this means
-  the LLM never runs at all.
+  3434.5ms → 131.5ms in-process, 172.8ms on the deployment.** Individually bounding each stage
+  still allows an unbounded total, so the budget is now carried through the request: the harness
+  receives what is actually left of it and pre-empts generation it cannot finish in time, falling
+  back to the already-retrieved top passage.
+- **Then the trade-off it created was removed rather than documented.** Pre-empting generation met
+  the deadline at the cost of never generating — a bad answer to the task, which asks for both.
+  Two-phase answering keeps the sub-200ms response *and* the LLM (see above): 150/150 deployed
+  queries inside budget, 14 real generative answers delivered in phase two.
 
 Rejected on evidence: reranker `max_length` tuning (dynamic padding already makes it a no-op) and
 DF-filtering BM25's high-frequency terms (faster, but changes the top result on 20% of queries).
@@ -407,7 +466,7 @@ refusal and every other guardrail remain active here regardless.
 ## Tests
 
 ```powershell
-uv run pytest -q   # 97 passed, 7 deselected (slow/GPU/provider tests) as of 2026-08-16
+uv run pytest -q   # 102 passed, 7 deselected (slow/GPU/provider tests) as of 2026-08-16
 uv run pytest -m slow tests/test_ml_integration.py tests/test_gemini_integration.py tests/test_sarvam_integration.py
 ```
 
@@ -423,15 +482,21 @@ Stated plainly rather than glossed over:
 - Guardrails run after retrieval and reranking, so they can prevent an unsafe *answer* but don't
   avoid retrieval cost for an unsafe query that passes the pre-filter.
 - There's no full `TestClient` coverage of `/v1/query` or `/v1/voice-query` — passing the
-  default fast unit-test suite alone is not live end-to-end proof.
-- The measured window (chunking + retrieval + through to final output) meets the <200ms target at
-  P50/P70/P100, but only because the request deadline pre-empts generation — under the shipped
-  200ms budget the LLM never actually runs, and
-  every answer is extractive or a refusal (see "Meeting the deadline"). Sub-200ms and a live LLM
-  call are mutually exclusive; this configuration picks the deadline, and says so rather than
-  reporting the number without the caveat.
-- The retrieval sub-stage's own P100 (336.4ms) is still above target on a rare query that hits
-  several stage tails at once, even with BM25 and sparse search individually bounded.
-- Latency figures come from an RTX 4060 Laptop GPU. Earlier runs of the same code on faster GPU
-  hardware were meaningfully quicker (retrieval P50 72.6ms vs 84.9ms here), so these numbers are
-  a floor, not a ceiling — but they are the ones reproducible from this repo as it stands.
+  default fast unit-test suite alone is not live end-to-end proof. The two-phase store's eviction,
+  TTL and single-use rules are unit-tested (`tests/test_refinement_store.py`); the endpoint wiring
+  around them is verified against the live deployment rather than in CI.
+- The <200ms target is met by the response the user waits for, not by a single request that also
+  contains LLM synthesis. Two-phase answering is a real resolution of that conflict rather than a
+  reframing of it — but the synthesized answer does arrive seconds later (P50 2.76s), and anyone
+  reading the target as "one request, LLM included, under 200ms" should know that no configuration
+  of this system does that, because no current LLM serving stack can.
+- The retrieval sub-stage's own P100 (336.4ms, in-process on the 4060) is above target on a rare
+  query that hits several stage tails at once, even with BM25 and sparse search individually
+  bounded. The deployed full-window P100 (172.8ms) stays inside budget because the deadline
+  degrades that query rather than letting it run long.
+- Latency depends materially on GPU: P50 55.8ms on the deployed 4090 versus 74.1ms on an RTX 4060
+  Laptop, same code and index. Both are reported above; neither is presented as the only number.
+- Half of all generated answers in the deployed run were refused by the grounding check (14 of
+  28). That is the guardrail working, but it also means retrieval frequently surfaces passages
+  that are topically close without supporting a specific claim — a retrieval-precision limit, not
+  only a generation one.

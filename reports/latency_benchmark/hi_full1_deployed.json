@@ -1,0 +1,21 @@
+{
+  "measurement": "deployed RunPod GPU Pod, over HTTPS, server-reported pipeline_ms",
+  "language": "hi",
+  "index_version": "full1",
+  "corpus_points_count": 964603,
+  "hardware": "RTX 4090, RunPod Pod, network volume",
+  "budget_ms": 200.0,
+  "n": 150,
+  "pipeline_ms": {
+    "p50": 55.81,
+    "p70": 61.24,
+    "p95": 81.03,
+    "p99": 164.19,
+    "p100": 172.78,
+    "mean": 57.21
+  },
+  "within_budget": 150,
+  "mode_breakdown": { "extractive": 124, "refused": 26 },
+  "phase_two_refinement_ms": { "n": 28, "p50": 2757.65, "p100": 4110.87 },
+  "phase_two_modes": { "generative": 14, "refused": 14 }
+}
