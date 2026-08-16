@@ -40,6 +40,9 @@ export interface QueryResponse {
   guardrail_flags: string[];
   evidence: EvidenceItem[];
   latency_ms: LatencyMs;
+  /** This answer met the latency budget, and a generated one is available via
+   *  POST /v1/query/refine. Absent on older API builds, hence optional. */
+  refinement_available?: boolean;
 }
 
 export interface VoiceQueryResponse extends QueryResponse {

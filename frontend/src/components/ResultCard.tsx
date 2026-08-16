@@ -16,7 +16,7 @@ const modeSealClasses: Record<AnswerMode, string> = {
   generative: "bg-gradient-to-br from-[#FBBF24] to-clay-warning",
 };
 
-export function ResultCard({ result }: { result: Result }) {
+export function ResultCard({ result, refining = false }: { result: Result; refining?: boolean }) {
   const copy = modeCopy[result.mode];
   const confidence = Math.round(result.confidence * 100);
   // Only `_ms` keys are durations. latency_ms also carries diagnostic counts
@@ -115,7 +115,7 @@ export function ResultCard({ result }: { result: Result }) {
           ) : (
             <>
               <small className="font-body text-xs text-clay-muted">
-                {withinBudget ? "within" : "over"} {Math.round(budgetMs)} ms budget
+                {withinBudget ? "within" : "over"} {formatMs(budgetMs)} budget
               </small>
               <div className="mt-2 h-1.5 overflow-hidden rounded-full bg-clay-accent/10">
                 <div
@@ -139,6 +139,16 @@ export function ResultCard({ result }: { result: Result }) {
           <small className="font-body text-xs text-clay-muted">request id</small>
         </div>
       </motion.div>
+
+      {refining && (
+        <div className="mx-6 mt-6 flex items-center gap-3 rounded-2xl bg-clay-accent/10 px-5 py-3 sm:mx-8">
+          <Sparkles size={16} className="shrink-0 animate-pulse text-clay-accent" />
+          <p className="font-body text-xs text-clay-foreground">
+            <b>Answered within budget.</b> Generating a synthesized answer from the same evidence — this
+            replaces the extract above when it arrives.
+          </p>
+        </div>
+      )}
 
       {result.guardrail_flags.length > 0 && (
         <div className="flex flex-wrap gap-2 px-6 pt-6 sm:px-8">
@@ -209,7 +219,7 @@ export function ResultCard({ result }: { result: Result }) {
             <span className="flex items-center gap-2 text-clay-accent">
               <span className={budgetMs === undefined ? "" : withinBudget ? "text-clay-success" : "text-clay-warning"}>
                 {formatMs(pipelineMs)}
-                {budgetMs !== undefined && ` / ${Math.round(budgetMs)} ms`}
+                {budgetMs !== undefined && ` / ${formatMs(budgetMs)}`}
               </span>
               <ChevronDown size={16} className="transition-transform duration-200 group-data-[state=open]:rotate-180" />
             </span>

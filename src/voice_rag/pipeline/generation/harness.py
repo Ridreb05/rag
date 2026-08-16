@@ -23,6 +23,11 @@ logger = logging.getLogger(__name__)
 EXTRACTIVE_CONFIDENCE_THRESHOLD = 0.85  # rerank_score above this -> skip the LLM entirely
 LOW_CONFIDENCE_THRESHOLD = 0.2  # rerank_score below this -> refuse rather than generate
 ENTAILMENT_THRESHOLD = 0.5  # per-claim grounding cutoff
+# Marks an answer that is extractive only because generation could not fit the
+# request's remaining budget. The API keys two-phase answering off this exact
+# flag, so it is a shared constant rather than a string literal matched in two
+# places that could silently drift apart.
+DEADLINE_FALLBACK_FLAG = "deadline_exceeded_extractive_fallback"
 
 
 def _refused(trace_id: str, model_version: str) -> AnswerResponse:
@@ -101,7 +106,7 @@ class GenerationHarness:
                 min_generation_budget_seconds,
             )
             resp = _extractive_answer(trace_id, candidates, self.generator.model)
-            resp.guardrail_flags = ["deadline_exceeded_extractive_fallback"]
+            resp.guardrail_flags = [DEADLINE_FALLBACK_FLAG]
             return resp
 
         req = GenerationRequest(

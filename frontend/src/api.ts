@@ -22,6 +22,17 @@ export const submitText = (body: QueryRequest) =>
     body: JSON.stringify(body),
   });
 
+/** Phase two of a two-phase answer: upgrades a within-budget extractive
+ *  answer to the generated one. Only call when the first response set
+ *  `refinement_available`; a 404 means it expired or was already claimed, in
+ *  which case the fast answer already on screen stays as-is. */
+export const refineAnswer = (traceId: string) =>
+  api<QueryResponse>("/v1/query/refine", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ trace_id: traceId }),
+  });
+
 export const submitVoice = (audio: Blob) => {
   const data = new FormData();
   data.append("audio", audio, `voice-query.${audio.type.includes("mp4") ? "mp4" : "webm"}`);

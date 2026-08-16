@@ -21,11 +21,14 @@ import tempfile
 import threading
 import time
 import uuid
+from collections import OrderedDict
 from concurrent.futures import ThreadPoolExecutor
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from contextlib import asynccontextmanager
+from dataclasses import dataclass
 from pathlib import Path
 
+import numpy as np
 from fastapi import FastAPI, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from fastapi.staticfiles import StaticFiles
@@ -36,7 +39,11 @@ from starlette.background import BackgroundTask
 from voice_rag.api.rate_limit import RateLimitMiddleware
 from voice_rag.pipeline.embeddings.service import EmbeddingService
 from voice_rag.pipeline.generation.gemini_service import GeminiGenerationService
-from voice_rag.pipeline.generation.harness import EXTRACTIVE_CONFIDENCE_THRESHOLD, GenerationHarness
+from voice_rag.pipeline.generation.harness import (
+    DEADLINE_FALLBACK_FLAG,
+    EXTRACTIVE_CONFIDENCE_THRESHOLD,
+    GenerationHarness,
+)
 from voice_rag.pipeline.generation.schemas import RetrievalCandidate
 from voice_rag.pipeline.guardrails.grounding import GroundingValidator
 from voice_rag.pipeline.guardrails.off_topic import OffTopicGate, compute_corpus_centroid
@@ -124,6 +131,9 @@ REQUEST_BUDGET_SECONDS = float(os.environ.get("VOICE_RAG_REQUEST_BUDGET_SECONDS"
 # hardcoded pessimism: raise REQUEST_BUDGET_SECONDS and generation re-enables
 # itself with no other change.
 MIN_GENERATION_BUDGET_SECONDS = float(os.environ.get("VOICE_RAG_MIN_GENERATION_BUDGET_SECONDS", "1.5"))
+# Retry/wall-clock budget for the refinement generator only — see where
+# services.refine_harness is built for why this is not the in-request 8s.
+REFINE_GENERATION_BUDGET_SECONDS = float(os.environ.get("VOICE_RAG_REFINE_GENERATION_BUDGET_SECONDS", "45"))
 MAX_AUDIO_BYTES = 15 * 1024 * 1024
 # Sarvam's BCP-47 codes; "or" -> "od-IN" is the one exception to the naive <code>-IN pattern.
 SARVAM_BCP47 = {
@@ -142,6 +152,7 @@ class Services:
     embedding: EmbeddingService
     reranker: RerankerService
     harness: GenerationHarness
+    refine_harness: GenerationHarness
     bm25: Bm25Index
     qdrant_client: object
     collection: str
@@ -206,6 +217,18 @@ async def lifespan(app: FastAPI):
         grounding_validator=grounding_validator,
         off_topic_gate=services.off_topic_gate,
     )
+    # Phase two of two-phase answering gets its own generator with a far more
+    # generous retry budget. The default 8s is sized for a caller who is
+    # waiting on the response; nobody waits on a refinement — the user already
+    # has a grounded answer — so cutting generation off at 8s there trades a
+    # real synthesized answer for nothing. Measured directly: an 8s budget
+    # expired mid-generation on a slower network and silently degraded the
+    # refinement back to the same extract it was meant to improve.
+    services.refine_harness = GenerationHarness(
+        generator=GeminiGenerationService(total_budget_seconds=REFINE_GENERATION_BUDGET_SECONDS),
+        grounding_validator=grounding_validator,
+        off_topic_gate=services.off_topic_gate,
+    )
     try:
         services.stt = SarvamSttClient()
     except RuntimeError:
@@ -240,6 +263,58 @@ class QueryResponse(BaseModel):
     guardrail_flags: list[str]
     evidence: list[EvidenceItem]
     latency_ms: dict[str, float]
+    # True when this answer was returned inside the latency budget *and* a
+    # generative answer was skipped only because it could not fit. The client
+    # can then POST /v1/query/refine to upgrade it. See _PendingRefinement.
+    refinement_available: bool = False
+
+
+class RefineRequest(BaseModel):
+    trace_id: str = Field(min_length=1, max_length=64)
+
+
+@dataclass
+class _PendingRefinement:
+    """Everything needed to generate an answer that retrieval already earned.
+
+    Two-phase answering exists because a live LLM call (~2.1s measured) and a
+    200ms budget cannot both fit in one response. Rather than pick one, the
+    first phase returns the grounded extractive answer inside the budget and
+    the second phase upgrades it — so the deadline is met by the response the
+    user actually waits for, and generation still happens.
+
+    Holding the reranked candidates here is what makes phase two cheap: it
+    reruns generation only, not embedding/retrieval/reranking, which the
+    request already paid for.
+    """
+
+    query_text: str
+    language: str
+    candidates: list[RetrievalCandidate]
+    query_embedding: np.ndarray
+    payload_by_chunk_id: dict[str, dict]
+    rerank_score_by_chunk_id: dict[str, float]
+    created_at: float
+
+
+# Bounded and TTL'd deliberately: this is a cache of in-flight work, not a
+# session store. An unbounded dict keyed by trace_id is a memory leak with a
+# client-supplied key. Single-process only — with multiple uvicorn workers a
+# refine call can land on a worker that never saw the original query, which
+# returns 404 and simply leaves the fast answer in place.
+_PENDING_REFINEMENTS: OrderedDict[str, _PendingRefinement] = OrderedDict()
+_REFINEMENT_TTL_SECONDS = 300.0
+_REFINEMENT_MAX_ENTRIES = 256
+
+
+def _remember_refinement(trace_id: str, pending: _PendingRefinement) -> None:
+    now = time.monotonic()
+    stale = [k for k, v in _PENDING_REFINEMENTS.items() if now - v.created_at > _REFINEMENT_TTL_SECONDS]
+    for key in stale:
+        _PENDING_REFINEMENTS.pop(key, None)
+    _PENDING_REFINEMENTS[trace_id] = pending
+    while len(_PENDING_REFINEMENTS) > _REFINEMENT_MAX_ENTRIES:
+        _PENDING_REFINEMENTS.popitem(last=False)
 
 
 def _sparse_vector(sparse: dict[int, float]) -> qdrant_models.SparseVector:
@@ -495,6 +570,27 @@ def _answer_query(
                 )
             )
 
+    # Phase two is offered only when generation was skipped *for time* — the
+    # deadline fired on a query the router would otherwise have generated for.
+    # A high-confidence extractive answer is not offered a refinement: the
+    # router skipped the LLM because the passage already answers the question,
+    # not because it ran out of budget. A refusal is not offered one either,
+    # since there is nothing grounded to refine.
+    refinement_available = DEADLINE_FALLBACK_FLAG in resp.guardrail_flags
+    if refinement_available:
+        _remember_refinement(
+            trace_id,
+            _PendingRefinement(
+                query_text=query_text,
+                language=language,
+                candidates=candidates,
+                query_embedding=q_embed.dense[0],
+                payload_by_chunk_id=payload_by_chunk_id,
+                rerank_score_by_chunk_id=rerank_score_by_chunk_id,
+                created_at=time.monotonic(),
+            ),
+        )
+
     return QueryResponse(
         trace_id=trace_id,
         answer_text=resp.answer_text,
@@ -503,12 +599,72 @@ def _answer_query(
         guardrail_flags=resp.guardrail_flags,
         evidence=evidence,
         latency_ms=timings,
+        refinement_available=refinement_available,
     )
 
 
 @app.post("/v1/query", response_model=QueryResponse)
 def query(req: QueryRequest) -> QueryResponse:
     return _answer_query(req.query, req.language, req.top_k)
+
+
+@app.post("/v1/query/refine", response_model=QueryResponse)
+def refine_query(req: RefineRequest) -> QueryResponse:
+    """Phase two: spend real time producing the generative answer.
+
+    Deliberately has no latency budget — its whole purpose is to do the work
+    that did not fit inside one. The caller already has a grounded answer, so
+    this is an upgrade running in the background of a conversation, not
+    something anyone is blocked on.
+    """
+    pending = _PENDING_REFINEMENTS.pop(req.trace_id, None)
+    if pending is None:
+        # Expired, evicted, already refined, or (multi-worker) handled by a
+        # process that never saw the original query. The client keeps the fast
+        # answer it already rendered.
+        raise HTTPException(status_code=404, detail="no pending refinement for this trace_id")
+
+    t_start = time.perf_counter()
+    resp = services.refine_harness.answer(
+        req.trace_id,
+        pending.query_text,
+        pending.language,
+        pending.candidates,
+        query_embedding=pending.query_embedding,
+        remaining_budget_seconds=None,  # no deadline: see docstring
+    )
+    generation_ms = (time.perf_counter() - t_start) * 1000
+
+    seen_chunk_ids: set[str] = set()
+    evidence: list[EvidenceItem] = []
+    for c in resp.claims:
+        for cid in c.cited_chunk_ids:
+            if cid in seen_chunk_ids:
+                continue
+            seen_chunk_ids.add(cid)
+            payload = pending.payload_by_chunk_id.get(cid)
+            evidence.append(
+                EvidenceItem(
+                    chunk_id=cid,
+                    text=payload["text"] if payload else c.text,
+                    rerank_score=pending.rerank_score_by_chunk_id.get(cid),
+                )
+            )
+
+    logger.info("refine_completed trace_id=%s mode=%s generation_ms=%.2f", req.trace_id, resp.mode, generation_ms)
+    return QueryResponse(
+        trace_id=req.trace_id,
+        answer_text=resp.answer_text,
+        mode=resp.mode,
+        confidence=resp.confidence,
+        guardrail_flags=resp.guardrail_flags,
+        evidence=evidence,
+        # Phase two's own cost, reported separately rather than added to the
+        # first response's total: the budget governs what the user waited for,
+        # and conflating the two would misreport both.
+        latency_ms={"generation_ms": generation_ms, "total_ms": generation_ms},
+        refinement_available=False,
+    )
 
 
 class VoiceQueryResponse(QueryResponse):

@@ -23,8 +23,8 @@ import "@fontsource/noto-sans-telugu/400.css";
 import "@fontsource/noto-nastaliq-urdu/400.css";
 import "./styles.css";
 
-import { ApiError, submitText, submitVoice } from "./api";
-import type { HealthResponse, HistoryItem, Result } from "./types";
+import { ApiError, refineAnswer, submitText, submitVoice } from "./api";
+import type { HealthResponse, HistoryItem, Result, VoiceQueryResponse } from "./types";
 import { Background } from "./components/Background";
 import { Header } from "./components/Header";
 import { QueryConsole } from "./components/QueryConsole";
@@ -43,6 +43,7 @@ function App() {
   const [micMessage, setMicMessage] = useState("");
   const [health, setHealth] = useState<"checking" | "ready" | "offline">("checking");
   const [history, setHistory] = useState<HistoryItem[]>([]);
+  const [refining, setRefining] = useState(false);
   const recorderRef = useRef<MediaRecorder | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const timeoutRef = useRef<number | null>(null);
@@ -63,6 +64,27 @@ function App() {
       { query: sourceQuery, result: next, voice },
       ...current.filter((item) => item.result.trace_id !== next.trace_id),
     ].slice(0, 5));
+
+    // Two-phase answering: the response above already met the latency budget,
+    // so the generated upgrade is fetched afterwards and swapped in place.
+    // Nothing is blocked on it — a failure or expiry silently leaves the
+    // grounded answer already on screen, which is a complete answer in its
+    // own right, not a placeholder.
+    if (!next.refinement_available) return;
+    const { trace_id: traceId } = next;
+    setRefining(true);
+    refineAnswer(traceId)
+      .then((refined) => {
+        const merged: Result = voice
+          ? { ...refined, transcript: (next as VoiceQueryResponse).transcript }
+          : refined;
+        setResult((current) => (current?.trace_id === traceId ? merged : current));
+        setHistory((current) =>
+          current.map((item) => (item.result.trace_id === traceId ? { ...item, result: merged } : item)),
+        );
+      })
+      .catch(() => undefined)
+      .finally(() => setRefining(false));
   };
 
   const textMutation = useMutation({
@@ -167,7 +189,7 @@ function App() {
 
         <AnimatePresence mode="wait">
           {pending && <LoadingCard voice={voiceMutation.isPending} />}
-          {result && !pending && <ResultCard result={result} />}
+          {result && !pending && <ResultCard result={result} refining={refining} />}
         </AnimatePresence>
 
         <SystemSection
