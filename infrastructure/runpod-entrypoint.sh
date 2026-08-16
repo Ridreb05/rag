@@ -87,6 +87,19 @@ if [ "${VOICE_RAG_GENERATION_BACKEND:-gemini}" = "vllm" ]; then
   vllm_model="${VOICE_RAG_VLLM_MODEL:-Qwen/Qwen3.5-4B}"
   vllm_port="${VOICE_RAG_VLLM_PORT:-8001}"
   export VOICE_RAG_VLLM_BASE_URL="${VOICE_RAG_VLLM_BASE_URL:-http://127.0.0.1:${vllm_port}/v1}"
+  # FlashInfer JIT-compiles its sampling kernel at startup, which needs ninja
+  # AND nvcc. This image is nvidia/cuda:*-runtime, which ships neither (only
+  # the far larger -devel variant has nvcc), so that build fails and takes the
+  # whole engine down with it — confirmed on the Pod: FileNotFoundError:
+  # 'ninja', after model weights had already loaded successfully. Installing
+  # ninja alone would only move the failure to nvcc one step later.
+  #
+  # Disabling it costs nothing here: this deployment samples at
+  # temperature=0, i.e. greedy decoding, so FlashInfer's optimized top-k/top-p
+  # kernel has no work to do that the PyTorch-native path doesn't already do.
+  # It is only exercised at all because vLLM's startup profiling runs a dummy
+  # *random* sampler pass regardless of how the server is actually used.
+  export VLLM_USE_FLASHINFER_SAMPLER="${VLLM_USE_FLASHINFER_SAMPLER:-0}"
   echo "Starting vLLM ($vllm_model) on port $vllm_port."
   (
     exec /opt/vllm-venv/bin/vllm serve "$vllm_model" \
