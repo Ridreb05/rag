@@ -16,8 +16,16 @@ FROM qdrant/qdrant:v1.13.4 AS qdrant-runtime
 # host drivers that reject CUDA 13 images before a container can start.
 FROM nvidia/cuda:11.8.0-runtime-ubuntu22.04
 
+# gcc: not needed by this app's own venv, but required for the vLLM venv —
+# Triton JIT-compiles custom CUDA kernels at runtime (e.g. the multimodal
+# position-embedding kernel Qwen3.5-4B's profiling pass touches even for a
+# text-only request), and this base image is deliberately the slim "runtime"
+# CUDA variant, not "devel", so it ships no compiler at all by default.
+# Confirmed on the actual Pod: vLLM got through model loading and GPU memory
+# profiling started, then failed here specifically — RuntimeError: Failed to
+# find C compiler — not a GPU-memory or version-compatibility issue.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    python3.11 python3.11-venv python3-pip curl ca-certificates libunwind8 \
+    python3.11 python3.11-venv python3.11-dev python3-pip curl ca-certificates libunwind8 gcc \
     && rm -rf /var/lib/apt/lists/*
 
 RUN curl -LsSf https://astral.sh/uv/install.sh | sh
