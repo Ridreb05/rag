@@ -9,6 +9,7 @@ prompt -> LLM -> response.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Protocol
 
 import numpy as np
@@ -20,9 +21,21 @@ from voice_rag.pipeline.guardrails.safety import check_unsafe_input
 
 logger = logging.getLogger(__name__)
 
-EXTRACTIVE_CONFIDENCE_THRESHOLD = 0.85  # rerank_score above this -> skip the LLM entirely
-LOW_CONFIDENCE_THRESHOLD = 0.2  # rerank_score below this -> refuse rather than generate
-ENTAILMENT_THRESHOLD = 0.5  # per-claim grounding cutoff
+# Routing thresholds, environment-overridable so they can be tuned against a
+# running deployment rather than only by rebuilding an image.
+#
+# LOW_CONFIDENCE_THRESHOLD is the one worth tuning first, and the failure it
+# guards against is subtler than "retrieval found nothing": a cross-encoder
+# scores topical relatedness, so for a question whose answer is absent from the
+# corpus it will still rank a *near-miss* passage well above 0.2 — the passage
+# is genuinely about the same subject area, just not an answer to the question.
+# Generation then faithfully summarises it, and the grounding validator
+# correctly passes it, because the claim really is entailed by the passage it
+# cites. Every stage behaves correctly and the user still gets an answer to a
+# question they did not ask. Raising this trades recall for fewer such answers.
+EXTRACTIVE_CONFIDENCE_THRESHOLD = float(os.environ.get("VOICE_RAG_EXTRACTIVE_THRESHOLD", "0.85"))
+LOW_CONFIDENCE_THRESHOLD = float(os.environ.get("VOICE_RAG_LOW_CONFIDENCE_THRESHOLD", "0.2"))
+ENTAILMENT_THRESHOLD = float(os.environ.get("VOICE_RAG_ENTAILMENT_THRESHOLD", "0.5"))
 # Marks an answer that is extractive only because generation could not fit the
 # request's remaining budget. The API keys two-phase answering off this exact
 # flag, so it is a shared constant rather than a string literal matched in two
