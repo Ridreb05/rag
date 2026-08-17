@@ -1,12 +1,25 @@
-# ClearAsk — Voice-Enabled RAG over MSMARCO-XI
+# ClearAsk
+
+### Voice-Enabled RAG over MSMARCO-XI
+
+<p>
+<img alt="Python 3.11" src="https://img.shields.io/badge/python-3.11-3776AB?logo=python&logoColor=white">
+<img alt="FastAPI" src="https://img.shields.io/badge/API-FastAPI-009688?logo=fastapi&logoColor=white">
+<img alt="React 18" src="https://img.shields.io/badge/frontend-React%2018-61DAFB?logo=react&logoColor=white">
+<img alt="Qdrant" src="https://img.shields.io/badge/vector%20db-Qdrant-DC244C?logo=qdrant&logoColor=white">
+<img alt="vLLM" src="https://img.shields.io/badge/generation-vLLM%20%2B%20Qwen3.5--4B-8A2BE2">
+<img alt="Latency" src="https://img.shields.io/badge/latency-P50%2027ms%20%2F%20200ms%20budget-2ea44f">
+<img alt="Tests" src="https://img.shields.io/badge/tests-113%20passed-2ea44f?logo=pytest&logoColor=white">
+</p>
 
 Submission for **HH Goa 2026 Shortlisting Task 2: Build a Voice-Enabled RAG Model**.
 
 A user asks a question in Hindi — typed or spoken. The system transcribes it, retrieves evidence
 from [`ai4bharat/MSMARCO-XI`](https://huggingface.co/datasets/ai4bharat/MSMARCO-XI), and answers
 with citations to the exact passages supporting each claim — or refuses, when the evidence isn't
-there. Generation runs on a model served on the same GPU, so the whole pipeline stays inside a
-200ms budget.
+there. Generation runs on a model served on the same GPU rather than behind an API, which is what
+brings the median request to 27ms against a 200ms budget. The tail is where the budget is
+contested, and [section 4](#4-latency) reports it rather than averaging it away.
 
 | | |
 |---|---|
@@ -14,6 +27,32 @@ there. Generation runs on a model served on the same GPU, so the whole pipeline 
 | **Dataset** | `ai4bharat/MSMARCO-XI`, Hindi `validation` split |
 | **Index** | 964,603 chunks, version `full1`, indexed in full |
 | **Deployment** | RunPod GPU Pod, started on demand — see [Deployment](#deployment) |
+| **Live API** | `https://kqipnoh0es5c6s-8000.proxy.runpod.net` — the Pod is started on demand, so this is up during review windows rather than continuously |
+
+<details>
+<summary><b>Contents</b></summary>
+
+- [Requirements at a glance](#requirements-at-a-glance)
+- [Tech stack](#tech-stack)
+- [Architecture](#architecture)
+- [1. Speech-to-text](#1-speech-to-text)
+- [2. Chunking](#2-chunking)
+- [3. Retrieval](#3-retrieval)
+- [4. Latency](#4-latency)
+- [5. Generation harness](#5-generation-harness)
+- [6. Guardrails](#6-guardrails)
+- [Two-phase answering](#two-phase-answering)
+- [Engineering notes](#engineering-notes)
+- [Interface](#interface)
+- [API](#api)
+- [Deployment](#deployment)
+- [Repository layout](#repository-layout)
+- [Running locally](#running-locally)
+- [Reproducing the numbers](#reproducing-the-numbers)
+- [Tests](#tests)
+- [Known limitations](#known-limitations)
+
+</details>
 
 ## Requirements at a glance
 
@@ -21,10 +60,31 @@ there. Generation runs on a model served on the same GPU, so the whole pipeline 
 |---|---|---|---|
 | 1 | Speech-to-text (Sarvam or ElevenLabs) | Sarvam `saarika` REST | [Speech-to-text](#1-speech-to-text) |
 | 2 | Non-naive chunking | 3 strategies + metadata-aware identity | [Chunking](#2-chunking) |
-| 3 | Under 200ms | retrieval **P50 55.8ms · P70 61.2ms · P100 172.8ms**, 150/150 in budget | [Latency](#4-latency) |
-| 4 | P50 / P70 / P100 analytics | n=150 deployed, n=1000 in-process | [Latency](#4-latency) |
+| 3 | Under 200ms | **P50 26.9ms · P70 31.4ms · P100 183.7ms**, 150/150 in budget on a warm index; 138/150 and P100 264.4ms on a cold one — both reported | [Latency](#4-latency) |
+| 4 | P50 / P70 / P100 analytics | n=150 deployed over HTTPS ×2, n=1000 in-process, broken out per stage | [Latency](#4-latency) |
 | 5 | Proper harness, not a raw prompt call | Typed orchestrator: routing, deadline, retries, recovery, grounding | [Harness](#5-generation-harness) |
-| 6 | Guardrails — knows when *not* to answer | 4 layers; **14 of 28 generated answers refused** on live data | [Guardrails](#6-guardrails) |
+| 6 | Guardrails — knows when *not* to answer | 4 layers; **16 of 30 generated answers refused** on live data | [Guardrails](#6-guardrails) |
+
+## Tech stack
+
+| layer | choice | why this one |
+|---|---|---|
+| **API** | FastAPI + Pydantic v2, Uvicorn, Python 3.11 | typed request/response contracts the harness also uses internally |
+| **Speech-to-text** | Sarvam `saarika:v2.5`, batch REST | the task's "pick one"; batch endpoint covers sub-30s clips |
+| **Embeddings** | `BAAI/bge-m3` — 1024-dim dense **and** learned-sparse from one forward pass | two of the three retrieval signals for the cost of one model load |
+| **Vector DB** | Qdrant 1.13.4, HNSW cosine + named sparse vectors | one store serving both vector signals; sparse uses the server's inverted index |
+| **Lexical search** | Tantivy BM25, embedded | model-independent signal; catches IDs, numbers, proper nouns |
+| **Fusion** | Reciprocal Rank Fusion, `k=60` | rank-only, so three incompatible score scales need no calibration |
+| **Reranking** | `BAAI/bge-reranker-v2-m3` cross-encoder | its top score is also the routing signal for the harness |
+| **Generation** | `Qwen/Qwen3.5-4B` on vLLM, FP8, CUDA graphs, same GPU | no network hop — the single largest latency decision |
+| **Grounding check** | `MoritzLaurer/mDeBERTa-v3-base-mnli-xnli` | per-claim entailment against cited evidence, multilingual |
+| **Frontend** | React 18, TypeScript 5.7, Vite 6, Tailwind, TanStack Query, Radix, Framer Motion | `MediaRecorder` capture; Noto fonts for all 14 Indic scripts |
+| **Packaging** | `uv` (locked), Docker, RunPod GPU Pod on a network volume | vLLM lives in its own venv — see [Deployment](#deployment) |
+| **Testing** | pytest, with slow GPU/provider tests opt-in | fast default suite; real-model tests behind a marker |
+
+Runtime topology is one container, three processes: Qdrant on localhost, `vllm serve`, and the API.
+
+---
 
 ## Architecture
 
@@ -38,8 +98,8 @@ Voice input → Sarvam STT → Chunking / Retrieval (vector DB) → Answer gener
 
 `POST /v1/query` (text) and `POST /v1/voice-query` (audio) run the same path; voice adds a
 transcription step in front. Generation is served by a local vLLM process on the same GPU as
-retrieval — see [Generation backend](#generation-backend) for why that choice is what makes the
-latency target reachable.
+retrieval — see [Generation backend](#generation-backend) for the measurements behind that choice,
+which removed roughly two seconds of network round trip per generated answer.
 
 ---
 
@@ -110,51 +170,109 @@ cross-encoder (`bge-reranker-v2-m3`) before the harness sees them.
 BM25 also acts as a resilience layer: it is model-independent, so it keeps working if the embedding
 service degrades.
 
+### Retrieval quality
+
+Scored against the dataset's own `is_selected` qrels with `evaluation/run_subset_eval.py`, which
+indexes exactly the passages a query sample references and runs the real hybrid search over them.
+n=120 sampled Hindi validation queries, of which 47 have no relevant passage labelled and are
+excluded, leaving 73 scored.
+
+| metric | fused (dense + learned-sparse + BM25, RRF) |
+|---|---:|
+| Recall@10 | 0.890 |
+| MRR | 0.479 |
+| NDCG@10 | 0.575 |
+| HitRate@5 | 0.712 |
+
+**This is a closed-world subset, not the 964,603-chunk index.** Only the passages those queries
+reference are indexed, so there are far fewer distractors than production has and Recall@10 is
+correspondingly optimistic. What it does establish is that the fusion path retrieves the labelled
+passage for the large majority of queries, and that the ranking is imperfect enough for reranking
+to have something to do — MRR 0.479 means the right passage is often not first.
+
+The reranked ordering is not scored here: loading the cross-encoder alongside BGE-M3 exhausted
+memory on the machine available for this run. `--rerank` scores both orderings side by side on a
+host with the headroom.
+
 ## 4. Latency
 
 ### Deployed measurement (primary), n=150
 
 Real HTTPS requests to `POST /v1/query` on the deployed GPU Pod, full 964,603-chunk index, RTX
 4090, with the API's own 20 req/60s rate limiter left enabled. The figure is the server's own
-`pipeline_ms`.
+`pipeline_ms`. Reproduce with `benchmark/deployed_benchmark.py`.
 
-| | P50 | P70 | P100 |
-|---|---:|---:|---:|
-| **ms** | **55.8** | **61.2** | **172.8** |
+The run was done twice with the same seed and the same 150 queries, and the two disagree enough
+that reporting only one would be cherry-picking:
 
-**150 of 150 queries completed inside the 200ms budget**, worst case included. Mode mix: 124
-extractive, 26 refused. Raw output: `reports/latency_benchmark/hi_full1_deployed.json`.
+| run | P50 | P70 | P95 | P99 | P100 | in budget |
+|---|---:|---:|---:|---:|---:|---:|
+| **Warm index** | **26.9** | **31.4** | 171.3 | 179.6 | **183.7** | **150/150** |
+| Cold index | 55.1 | 71.3 | 207.9 | 227.9 | 264.4 | 138/150 |
 
-This run measured the pipeline with generation deferred (the deadline pre-empted it, and it was
-completed out of band — see [Two-phase answering](#two-phase-answering)). It is therefore an
-honest measurement of **retrieval, guardrails and extractive answering** at scale, not of inline
-generation.
+Raw output: `hi_full1_deployed_inline.json` and `hi_full1_deployed_inline_cold.json` under
+`reports/latency_benchmark/`.
 
-### Inline local generation — measured, not yet benchmarked
+The difference is almost entirely one stage:
 
-With generation served locally on the same GPU it now runs *inside* the request. Per-stage timing
-from the deployment:
+| stage | P50 warm | P50 cold | P100 warm | P100 cold |
+|---|---:|---:|---:|---:|
+| embedding | 6.4 | 6.3 | 15.7 | 15.6 |
+| **retrieval (dense + sparse + BM25)** | **4.9** | **32.6** | **26.5** | **139.5** |
+| BM25 wall (overlapped) | 0.02 | 0.02 | 0.04 | 0.03 |
+| fusion | 0.01 | 0.01 | 0.02 | 0.03 |
+| rerank | 11.5 | 11.6 | 25.2 | 26.3 |
+| generation | 0.06 | 0.06 | 144.9 | 213.0 |
 
-| stage | ms |
-|---|---:|
-| embedding | 15 |
-| retrieval (dense + sparse + BM25) | 4 |
-| BM25 wall (overlapped) | 0 |
-| fusion | 0 |
-| rerank | 18 |
-| **retrieval subtotal** | **37** |
-| generation (20 output tokens) | 190 |
-| **total** | **227** |
+Embedding and reranking are identical across the two — they are fixed GPU work on a resident
+model. Retrieval moved 6.7x at P50 and 5.3x at P100. The cold run was the first sustained traffic
+after the Pod started; roughly 200 queries later, the warm run searched the same index. The
+likely cause is OS page cache and Qdrant's own warm state over a 964,603-point index, though this
+was not isolated with a controlled cache drop, so it is the best-supported explanation rather than
+a proven one.
 
-That 227ms is over budget, and the response is the tuning that follows from it: generation cost
-decomposes to a 40–60ms fixed per-request overhead plus ~6.5–7.5ms per output token, so the output
-cap moved 20 → 14 tokens, which puts the total at ~182–188ms.
+**Which number counts depends on what is being claimed.** A Pod serving continuous traffic sits in
+the warm state, and there the deployment meets the budget on every one of 150 requests. A Pod
+started on demand and hit immediately does not: 12 requests missed, worst case 264.4ms. Since this
+deployment is explicitly on-demand, both are real operating conditions.
 
-**Stated plainly: those are single-query observations and an arithmetic projection, not a
-benchmark.** The n=150 figures above were produced under the previous configuration. A full
-re-benchmark of the inline-generation configuration has not been run, and until it is, the
-sub-200ms claim for inline generation is a projection while the sub-200ms claim for the
-retrieval/extractive path is a measurement.
+Generation's P50 of 0.06ms is not a fast model — it is the requests where the model was never
+called, because the harness routed straight to an extractive answer or a pre-generation refusal.
+In the warm run, 30 of 150 requests reached the model and the per-request records confirm that not
+one of them exceeded the budget.
+
+The cold run's 12 misses are attributed to its 26 generative requests by inference rather than by
+record — that run predates the per-request array the benchmark now writes. The arithmetic supports
+it: without generation, the cold stage tails sum to at most ~181ms even if embedding, retrieval and
+rerank all peaked on the same request, whereas adding a 213ms generation call reaches the 264.4ms
+observed. A future cold run answers this directly from `requests[].over_budget`.
+
+This supersedes an earlier n=150 run in the same file series
+(`reports/latency_benchmark/hi_full1_deployed.json`: P50 55.8, P70 61.2, P100 172.8, 150/150 in
+budget), produced when generation was always deferred out of band and so never measured inline.
+All three are kept.
+
+The projection previously documented here — that capping output at 14 tokens would put inline
+generation around 182–188ms — is close to what the warm run measured (P100 183.7ms). It did not
+survive the cold run, where a 213ms generation call cannot fit a 200ms budget whatever it is added
+to. The deadline is what keeps that bounded: when too little budget remains the harness defers
+generation instead of overrunning further, which it did 4 times in the cold run and never in the
+warm one.
+
+### Third-party harness cross-check
+
+`benchmark/aranya/benchmark.py` is an external latency harness, written against a different
+service's in-process retriever. It was pointed at this deployment through a shim that keeps its
+`search()` interface but issues HTTPS calls (`benchmark/aranya/app/`). Over 50 queries it reported
+embed P50 6.3ms, search P50 2.9ms, total P50 27.7ms / P95 75.9ms — an independent harness landing
+on the warm run's numbers (P50 26.9ms) to within a millisecond.
+
+Its queries are English questions about FAISS and HNSW against a Hindi corpus, so **all 50 were
+refused** and none reached generation. It therefore cross-checks the retrieval path on an
+independent harness and says nothing about the generative path. Client-observed wall clock averaged
+779ms, of which ~744ms was network and proxy overhead from outside the datacentre — the reason
+every figure in this section is the server's own `pipeline_ms` rather than a stopwatch at the
+caller.
 
 ### In-process cross-check
 
@@ -182,8 +300,8 @@ Reported per request as `pipeline_ms` and enforced by `VOICE_RAG_REQUEST_BUDGET_
 | stage | in budget | cost |
 |---|---|---|
 | Chunking | yes | 0ms per query — amortised into the offline index build |
-| Embedding → dense + sparse + BM25 → RRF → rerank | yes | ~37ms measured |
-| Guardrails → answer | yes | the remainder |
+| Embedding → dense + sparse + BM25 → RRF → rerank | yes | ~23ms at P50 warm, ~50ms cold |
+| Guardrails → answer | yes | ~0ms extractive or refused; 141–213ms generative |
 | Speech-to-text | no — upstream of the window | reported as `stt_ms` |
 
 Chunking costs nothing per query because MSMARCO-XI passages are chunked once at index build. That
@@ -277,9 +395,12 @@ Four layers, ordered cheapest-first:
 | Off-topic centroid gate | queries outside the corpus's topic entirely | no |
 | Per-claim NLI grounding | claims not entailed by their cited evidence | yes |
 
-**Evidence it works on live data:** of 28 generated answers in a deployed benchmark run, **14 were
-refused after generation** because the grounding check rejected their claims. The system generated,
-checked its own output against the retrieved evidence, and declined to show half of it.
+**Evidence it works on live data.** In the warm n=150 deployed run, 54 of 150 queries were refused,
+and the `guardrail_flags` show which layer did it: 38 by confidence or the off-topic gate before
+the model was involved, and **16 after generation, because the NLI check rejected the claims**.
+30 queries reached generation in total, so the grounding validator discarded slightly over half of
+what the model produced. The cold run gives the same picture at 13 of 26. The system generated,
+checked its own output against the retrieved evidence, and declined to show it.
 
 Moving generation to a self-hosted model removed a layer that a hosted API had provided for free:
 a provider-side trained safety classifier. The input-side filter is now a keyword/regex list with
@@ -302,9 +423,11 @@ the candidates the request already retrieved and reranked, and the UI swaps the 
 into the same card. It carries no deadline, because nobody is blocked on it.
 
 **With local generation this is now a fallback rather than the normal path.** Generation runs
-inline because it fits; two-phase engages when a slow query leaves too little budget. The n=150
-benchmark above was produced when generation was remote and *always* deferred, which is why its
-mode mix contains no generative answers.
+inline when the budget allows; two-phase engages when a slow query leaves too little. On the warm
+run that never happened — 0 of 150 requests deferred. On the cold run it happened 4 times
+(`deadline_exceeded_extractive_fallback`), each leaving a refinement available, and phase two then
+took a P50 of 552ms and a worst case of 1186ms. That gap between 200ms and 1186ms is the concrete
+reason the work is not attempted inside the request.
 
 Two implementation details that matter:
 
@@ -328,8 +451,8 @@ measured them.
 | **BM25 searcher caching, then off the critical path.** `search()` reloaded the index from disk every call; the searcher is now cached and invalidated on write. BM25 needs only the raw query string, so it starts *before* the encoder and runs underneath it. | 22.0ms → 14.1ms, then absorbed |
 | **BM25's tail bounded.** Tantivy's OR-of-terms cost scales with matched postings length, and high-frequency Hindi function words pushed single queries past 400ms (p50 ~15ms, p100 ~460ms — a ~30x gap). Past a 100ms budget BM25 is dropped for that request; dense + sparse still answer it. | retrieval P100 623ms → 303ms |
 | **Qdrant sparse search had the same pathology** — and profiling (rather than assuming BM25 was still the culprit) showed it was the larger contributor: p50 6.5ms, p100 386ms. Bounded to the same 100ms. Dense is left unbounded: it is the only signal guaranteed to return for any query, and HNSW's cost doesn't scale with term frequency. | sparse P100 386ms → 101ms; retrieval P100 458ms → 336ms |
-| **The 200ms target became a real deadline** carried through the request, instead of something measured after the fact. | full-window P100 3434ms → 173ms deployed |
-| **Two-phase answering** removed the trade-off that deadline created — meeting the budget by never generating is a poor answer to a task that asks for both. | 150/150 in budget, generation preserved |
+| **The 200ms target became a real deadline** carried through the request, instead of something measured after the fact. | full-window P100 3434ms → 184ms with generation running inline on a warm index |
+| **Two-phase answering** removed the trade-off that deadline created — meeting the budget by never generating is a poor answer to a task that asks for both. | now a fallback rather than the path: 0 deferrals in 150 warm requests, 4 when the index was cold |
 | **Generation moved on-GPU.** A hosted API's ~2.1s median is almost entirely network round trip; a model on the same GPU has no such hop. | 3240ms → 634ms |
 | **CUDA graphs + FP8.** Eager execution ran at ~32% of the hardware's bandwidth ceiling; bf16 then capped useful output at under 11 tokens regardless of scheduling. | 634ms → 190ms @20 tokens |
 
@@ -351,6 +474,42 @@ Two correctness bugs found while producing this evidence:
 
 Rejected on evidence: reranker `max_length` tuning (dynamic padding makes it a no-op) and
 DF-filtering BM25's high-frequency terms (faster, but changes the top result on 20% of queries).
+
+---
+
+## Interface
+
+The SPA in `frontend/` is served by the same process as the API, so the deployed URL is both. It
+records with `MediaRecorder` and posts to `/v1/voice-query`, or takes typed Hindi.
+
+The result card is built to show the reader what the system did, not just its answer: the per-stage
+`latency_ms` breakdown against the budget line, `stt_ms` separately when the question was spoken,
+every cited chunk with its ID and rerank score, and the mode the harness chose. When a query was
+answered extractively because the deadline pre-empted generation, the card says so and swaps in the
+phase-two answer when it arrives. An on-demand English toggle calls `/v1/translate` for readers who
+do not read Hindi, leaving the cited passages in the original.
+
+## API
+
+| method | path | purpose |
+|---|---|---|
+| `POST` | `/v1/query` | text question → grounded answer. Rate limited, 20 req/60s per IP. |
+| `POST` | `/v1/voice-query` | `multipart/form-data` audio → transcribe, then the same path |
+| `POST` | `/v1/query/refine` | phase two: regenerate against the candidates already retrieved, by `trace_id`. No deadline. |
+| `POST` | `/v1/translate` | render an answer in English, on the resident model. Display aid only. |
+| `GET` | `/v1/health` | readiness: manifest and Qdrant point count must agree; reports the generation backend and its reachability |
+| `POST` | `/v1/admin/export-index/*` | start / poll / download an index export, for seeding a new volume |
+
+```bash
+curl -X POST https://<pod>.proxy.runpod.net/v1/query \
+  -H 'content-type: application/json' \
+  -d '{"query": "ताज महल कहाँ है?", "language": "hi", "top_k": 10}'
+```
+
+Every response carries `trace_id`, `answer_text`, `mode` (`extractive` | `generative` | `refused`),
+`confidence`, `guardrail_flags`, `evidence[]` with the chunk IDs and text behind the answer, and
+`latency_ms` broken out per stage — the same `pipeline_ms` the benchmarks report. Interactive
+OpenAPI docs are at `/docs`.
 
 ## Deployment
 
@@ -401,6 +560,8 @@ Environment knobs, all changeable without a rebuild:
 
 `Dockerfile.cloudrun` targets the same full-index architecture on Cloud Run and is unused.
 
+---
+
 ## Repository layout
 
 ```
@@ -419,8 +580,13 @@ src/voice_rag/
     main.py               # FastAPI app: lifespan, routes, readiness, SPA mount
     rate_limit.py         # Per-IP sliding-window rate limit (20 req/60s/worker)
 scripts/                  # Resumable full-index builder, smoke-index helper
-evaluation/               # Retrieval metrics (Recall@K, MRR, NDCG)
-benchmark/                # Latency benchmark, live voice HTTP benchmark
+evaluation/
+  retrieval_metrics.py    # Recall@K, MRR, NDCG@K, HitRate@K
+  run_subset_eval.py      # Closed-world subset eval against the dataset's own qrels
+benchmark/
+  deployed_benchmark.py   # HTTPS against a live deployment; server-reported pipeline_ms
+  latency_benchmark.py    # Same pipeline in-process, per-stage isolation
+  voice_e2e_benchmark.py  # /v1/voice-query wall clock, including STT
 frontend/                 # React 18 + TypeScript + Vite SPA
 infrastructure/           # Container entrypoints
 reports/                  # Benchmark evidence cited above
@@ -446,10 +612,32 @@ Generation requires a vLLM server on `VOICE_RAG_VLLM_BASE_URL` (default
 `http://127.0.0.1:8001/v1`); without one, the harness degrades to extractive answers rather than
 failing. Or `docker compose up` for the two-service (Qdrant + app) topology.
 
+## Reproducing the numbers
+
+```powershell
+# Latency against a running deployment — the primary figures in section 4
+uv run python -m benchmark.deployed_benchmark --api-url https://<pod>.proxy.runpod.net --n-queries 150
+
+# The same pipeline in-process, per-stage
+uv run python -m benchmark.latency_benchmark --language hi --index-version benchmark `
+    --qdrant-url http://localhost:6333 --n-queries 1000 --n-queries-e2e 150
+
+# Voice path wall clock, including STT
+uv run python -m benchmark.voice_e2e_benchmark --audio-dir data/benchmark_audio --api-url <url>
+
+# Retrieval quality against the dataset's own qrels
+uv run python -m evaluation.run_subset_eval --language hi --n-queries 300 --rerank
+```
+
+`deployed_benchmark.py` paces itself inside the API's 20 req/60s limiter, so a 150-query run takes
+about eight minutes, most of it waiting. It samples the same validation queries with the same seed
+as the in-process benchmark, so the two are comparable rather than merely similar. Raw JSON lands
+in `reports/latency_benchmark/`.
+
 ## Tests
 
 ```powershell
-uv run pytest -q      # 110 passed, 6 deselected (slow/GPU/provider), 2026-08-17
+uv run pytest -q      # 113 passed, 6 deselected (slow/GPU/provider), 2026-08-17
 uv run pytest -m slow tests/test_ml_integration.py tests/test_sarvam_integration.py
 ```
 
@@ -458,9 +646,20 @@ providers and are opt-in.
 
 ## Known limitations
 
-- **The inline-generation configuration is not benchmarked.** The n=150 figures were produced when
-  generation was deferred out of band. Single-query timings and the arithmetic behind the 14-token
-  cap are reported above, but a full re-benchmark has not been run.
+- **The budget holds on a warm index and not on a cold one.** Two n=150 runs over the same queries:
+  150/150 in budget at P100 183.7ms warm, 138/150 at P100 264.4ms cold, the difference being a 6.7x
+  swing in Qdrant retrieval time. The deployment is started on demand, so the cold state is a real
+  operating condition and not a laboratory artifact. Nothing in the code warms the index on
+  startup; a few hundred throwaway queries after boot would, and that is not implemented.
+- **The cache explanation is inferred, not isolated.** Embedding and rerank timings were unchanged
+  across the two runs and only retrieval moved, which points at page cache and Qdrant warm state,
+  but no controlled cache-drop experiment was run to confirm it.
+- **Retrieval quality is measured on a closed-world subset, not the full index.** Recall@10 0.890
+  is against ~1.2K indexed chunks, not 964,603, so it overstates production recall. Reranked
+  ordering is unscored — the cross-encoder would not co-load with BGE-M3 on the available machine.
+- **Only 14 of 150 benchmark queries produced a generative answer** (30 reached the model; 16 were
+  refused after it), so the generative path's latency distribution rests on a small sample even
+  though the overall run is n=150.
 - **Answer relevance is not checked; groundedness is.** A cross-encoder scores topical relatedness,
   so for a question whose answer is absent from the corpus it can rank a near-miss passage well
   above the refusal threshold. Generation then faithfully summarises it and the NLI validator
@@ -479,11 +678,11 @@ providers and are opt-in.
   collection. The request-level `language` field labels the response; it does not switch indexes.
 - The retrieval sub-stage's P100 (336.4ms in-process) exceeds target on rare queries where several
   stage tails coincide, even with BM25 and sparse individually bounded.
-- Latency depends materially on GPU: P50 55.8ms on a 4090 versus 74.1ms on a 4060 Laptop, same code
+- Latency depends materially on GPU: P50 26.9ms on a 4090 versus 74.1ms on a 4060 Laptop, same code
   and index.
-- Half the generated answers in the deployed run were refused by the grounding check (14 of 28).
-  That is the guardrail working, but it also indicates retrieval surfaces topically-close passages
-  that do not support a specific claim.
+- Over half the generated answers in the deployed run were refused by the grounding check (16 of
+  30). That is the guardrail working, but it also indicates retrieval surfaces topically-close
+  passages that do not support a specific claim.
 - No full `TestClient` coverage of `/v1/query` or `/v1/voice-query`. The refinement store's
   eviction, TTL and single-use rules are unit-tested; endpoint wiring is verified against the live
   deployment rather than in CI.

@@ -1,0 +1,1412 @@
+{
+  "measurement": "deployed API over HTTPS, server-reported pipeline_ms",
+  "api_url": "https://kqipnoh0es5c6s-8000.proxy.runpod.net",
+  "language": "hi",
+  "index_version": "full1",
+  "budget_ms": 200.0,
+  "n": 150,
+  "pipeline_ms": {
+    "p50": 26.915187016129494,
+    "p70": 31.37045167386532,
+    "p95": 171.25644348561764,
+    "p99": 179.64592762291431,
+    "p100": 183.72528813779354,
+    "mean": 54.24082048237324,
+    "min": 18.808195367455482,
+    "n": 150
+  },
+  "wall_clock_ms": {
+    "p50": 359.67879999952856,
+    "p70": 369.79840000276454,
+    "p95": 666.8155000079423,
+    "p99": 1267.0429999998305,
+    "p100": 1412.0867000019643,
+    "mean": 427.47240533314954,
+    "min": 333.6645999952452,
+    "n": 150
+  },
+  "stage_ms": {
+    "embedding_ms": {
+      "p50": 6.376186385750771,
+      "p70": 6.576159968972206,
+      "p95": 9.438475593924522,
+      "p99": 14.992600306868553,
+      "p100": 15.72156697511673,
+      "mean": 6.855041645467281,
+      "min": 5.878480151295662,
+      "n": 150
+    },
+    "retrieval_ms": {
+      "p50": 4.87302802503109,
+      "p70": 6.572593003511429,
+      "p95": 14.22041468322277,
+      "p99": 17.01122708618641,
+      "p100": 26.45912952721119,
+      "mean": 6.180121079087257,
+      "min": 2.7258526533842087,
+      "n": 150
+    },
+    "bm25_wall_ms": {
+      "p50": 0.019041821360588074,
+      "p70": 0.020505860447883606,
+      "p95": 0.024713575839996338,
+      "p99": 0.03454461693763733,
+      "p100": 0.03872998058795929,
+      "mean": 0.019541097184022267,
+      "min": 0.01527927815914154,
+      "n": 150
+    },
+    "fusion_ms": {
+      "p50": 0.011991709470748901,
+      "p70": 0.013444572687149048,
+      "p95": 0.017523765563964844,
+      "p99": 0.019434839487075806,
+      "p100": 0.02172030508518219,
+      "mean": 0.012636135021845499,
+      "min": 0.0078640878200531,
+      "n": 150
+    },
+    "rerank_ms": {
+      "p50": 11.494429782032967,
+      "p70": 16.669001430273056,
+      "p95": 19.16235126554966,
+      "p99": 21.799519658088684,
+      "p100": 25.15677735209465,
+      "mean": 13.395422622561455,
+      "min": 8.841384202241898,
+      "n": 150
+    },
+    "generation_ms": {
+      "p50": 0.05719810724258423,
+      "p70": 0.06569921970367432,
+      "p95": 141.38667657971382,
+      "p99": 144.81068588793278,
+      "p100": 144.939748570323,
+      "mean": 27.71706401060025,
+      "min": 0.04459172487258911,
+      "n": 150
+    }
+  },
+  "within_budget": 150,
+  "mode_breakdown": {
+    "generative": 14,
+    "refused": 54,
+    "extractive": 82
+  },
+  "guardrail_flags": {
+    "low_confidence_or_off_topic": 38,
+    "unsupported_claim_low_entailment": 16
+  },
+  "over_budget_modes": {},
+  "requests": [
+    {
+      "mode": "generative",
+      "pipeline_ms": 169.70290429890156,
+      "generation_ms": 142.43684895336628,
+      "wall_ms": 498.14989999867976,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 19.10344325006008,
+      "generation_ms": 0.05461275577545166,
+      "wall_ms": 348.223400011193,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 26.320643723011017,
+      "generation_ms": 0.09451620280742645,
+      "wall_ms": 355.7437000126811,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 21.792475134134293,
+      "generation_ms": 0.06546080112457275,
+      "wall_ms": 347.2803000040585,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 34.082626923918724,
+      "generation_ms": 0.05027279257774353,
+      "wall_ms": 361.3384999916889,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 30.26425465941429,
+      "generation_ms": 0.0687967985868454,
+      "wall_ms": 361.07369999808725,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 20.758263766765594,
+      "generation_ms": 0.0464562326669693,
+      "wall_ms": 350.26409999409225,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 170.13315297663212,
+      "generation_ms": 140.95688797533512,
+      "wall_ms": 498.1932999944547,
+      "over_budget": false,
+      "guardrail_flags": [
+        "unsupported_claim_low_entailment"
+      ]
+    },
+    {
+      "mode": "generative",
+      "pipeline_ms": 169.917369261384,
+      "generation_ms": 140.29411226511002,
+      "wall_ms": 495.90310000348836,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 24.385962635278702,
+      "generation_ms": 0.05780719220638275,
+      "wall_ms": 352.30340000998694,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 24.33810569345951,
+      "generation_ms": 0.05110353231430054,
+      "wall_ms": 355.2957000065362,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 23.168018087744713,
+      "generation_ms": 0.059291720390319824,
+      "wall_ms": 350.2516000007745,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 22.626319900155067,
+      "generation_ms": 0.05967170000076294,
+      "wall_ms": 351.22579999733716,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 28.887510299682617,
+      "generation_ms": 0.06621517241001129,
+      "wall_ms": 358.8272000051802,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 28.803052380681038,
+      "generation_ms": 0.06569921970367432,
+      "wall_ms": 359.3700000055833,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "generative",
+      "pipeline_ms": 166.5557362139225,
+      "generation_ms": 140.38719423115253,
+      "wall_ms": 493.9582000079099,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 23.63262139260769,
+      "generation_ms": 0.05614385008811951,
+      "wall_ms": 351.55229999509174,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 20.312801003456116,
+      "generation_ms": 0.06902962923049927,
+      "wall_ms": 350.2252000034787,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 21.2076585739851,
+      "generation_ms": 0.05267933011054993,
+      "wall_ms": 349.65079999528825,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 31.061356887221336,
+      "generation_ms": 0.05955062806606293,
+      "wall_ms": 556.6768999997294,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 22.794120013713837,
+      "generation_ms": 0.06333738565444946,
+      "wall_ms": 346.5266999992309,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "generative",
+      "pipeline_ms": 173.91075380146503,
+      "generation_ms": 144.81068588793278,
+      "wall_ms": 497.0173000037903,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 31.863801181316376,
+      "generation_ms": 0.05647540092468262,
+      "wall_ms": 355.8690999925602,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "generative",
+      "pipeline_ms": 153.33657711744308,
+      "generation_ms": 131.3044223934412,
+      "wall_ms": 478.3735000091838,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 26.259949430823326,
+      "generation_ms": 0.05874037742614746,
+      "wall_ms": 350.16729999915697,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 21.40592597424984,
+      "generation_ms": 0.05007348954677582,
+      "wall_ms": 345.41550000722054,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 36.760782822966576,
+      "generation_ms": 0.05483254790306091,
+      "wall_ms": 361.8992999981856,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 19.931573420763016,
+      "generation_ms": 0.051448121666908264,
+      "wall_ms": 346.08180000213906,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 28.95774319767952,
+      "generation_ms": 0.05249492824077606,
+      "wall_ms": 352.4174000049243,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 19.630853086709976,
+      "generation_ms": 0.04768744111061096,
+      "wall_ms": 343.570400000317,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 22.391991689801216,
+      "generation_ms": 0.05356036126613617,
+      "wall_ms": 348.6177999875508,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 20.450035110116005,
+      "generation_ms": 0.049019232392311096,
+      "wall_ms": 886.4858000015374,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 45.85203342139721,
+      "generation_ms": 0.06464123725891113,
+      "wall_ms": 358.5246000002371,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 19.685477018356323,
+      "generation_ms": 0.06808526813983917,
+      "wall_ms": 333.6645999952452,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 23.361414670944214,
+      "generation_ms": 0.054663047194480896,
+      "wall_ms": 336.3246000080835,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 21.327830851078033,
+      "generation_ms": 0.05023367702960968,
+      "wall_ms": 334.5408999884967,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 20.388804376125336,
+      "generation_ms": 0.0447835773229599,
+      "wall_ms": 335.1581000024453,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 20.293377339839935,
+      "generation_ms": 0.05566328763961792,
+      "wall_ms": 336.8940999935148,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 23.25533889234066,
+      "generation_ms": 0.0530686229467392,
+      "wall_ms": 336.62670000921935,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 30.52602708339691,
+      "generation_ms": 0.05655549466609955,
+      "wall_ms": 1076.4681000000564,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 19.38040740787983,
+      "generation_ms": 0.05242787301540375,
+      "wall_ms": 344.0359999949578,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 41.22965969145298,
+      "generation_ms": 0.07837638258934021,
+      "wall_ms": 368.09549998724833,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 24.619068950414658,
+      "generation_ms": 0.05745701491832733,
+      "wall_ms": 350.69220000877976,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 175.88113993406296,
+      "generation_ms": 143.18478293716908,
+      "wall_ms": 499.55719998979475,
+      "over_budget": false,
+      "guardrail_flags": [
+        "unsupported_claim_low_entailment"
+      ]
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 20.846756175160408,
+      "generation_ms": 0.049130991101264954,
+      "wall_ms": 343.87289998994675,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 21.11421339213848,
+      "generation_ms": 0.06037205457687378,
+      "wall_ms": 348.26369999791496,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 170.97199335694313,
+      "generation_ms": 130.602004006505,
+      "wall_ms": 495.15050000627525,
+      "over_budget": false,
+      "guardrail_flags": [
+        "unsupported_claim_low_entailment"
+      ]
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 23.225653916597366,
+      "generation_ms": 0.06966106593608856,
+      "wall_ms": 350.9195000078762,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 27.98347733914852,
+      "generation_ms": 0.058399513363838196,
+      "wall_ms": 354.8341999994591,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 20.732782781124115,
+      "generation_ms": 0.05896948277950287,
+      "wall_ms": 345.7925999973668,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "generative",
+      "pipeline_ms": 167.8939238190651,
+      "generation_ms": 136.50239445269108,
+      "wall_ms": 491.77870000130497,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 21.743737161159515,
+      "generation_ms": 0.06573274731636047,
+      "wall_ms": 347.6452999893809,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 158.4237441420555,
+      "generation_ms": 131.52386993169785,
+      "wall_ms": 480.1798999978928,
+      "over_budget": false,
+      "guardrail_flags": [
+        "unsupported_claim_low_entailment"
+      ]
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 31.82799182832241,
+      "generation_ms": 0.05786679685115814,
+      "wall_ms": 356.4769999939017,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 25.439593940973282,
+      "generation_ms": 0.05042366683483124,
+      "wall_ms": 349.6171000006143,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 26.743581518530846,
+      "generation_ms": 0.05289912223815918,
+      "wall_ms": 350.68869999668095,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 20.252719521522522,
+      "generation_ms": 0.0555720180273056,
+      "wall_ms": 346.6751999949338,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 34.79095734655857,
+      "generation_ms": 0.05233846604824066,
+      "wall_ms": 357.86770000413526,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 21.519187837839127,
+      "generation_ms": 0.0633876770734787,
+      "wall_ms": 345.9465999912936,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 30.528925359249115,
+      "generation_ms": 0.06376020610332489,
+      "wall_ms": 1102.9347000003327,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 29.33594398200512,
+      "generation_ms": 0.05956925451755524,
+      "wall_ms": 358.40929999540094,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 28.450297191739082,
+      "generation_ms": 0.061413273215293884,
+      "wall_ms": 357.65960000571795,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 34.45731662213802,
+      "generation_ms": 0.05717575550079346,
+      "wall_ms": 363.55559999356046,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 22.998079657554626,
+      "generation_ms": 0.06026215851306915,
+      "wall_ms": 351.6135999961989,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 19.52955685555935,
+      "generation_ms": 0.05102530121803284,
+      "wall_ms": 348.8641000003554,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 170.1664663851261,
+      "generation_ms": 143.06876622140408,
+      "wall_ms": 498.1796000065515,
+      "over_budget": false,
+      "guardrail_flags": [
+        "unsupported_claim_low_entailment"
+      ]
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 26.214193552732468,
+      "generation_ms": 0.052265822887420654,
+      "wall_ms": 354.300000006333,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 22.788092494010925,
+      "generation_ms": 0.05411915481090546,
+      "wall_ms": 350.60380000504665,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 20.47310210764408,
+      "generation_ms": 0.048801302909851074,
+      "wall_ms": 351.1459000001196,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 27.120864018797874,
+      "generation_ms": 0.05719810724258423,
+      "wall_ms": 357.7203000022564,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 31.35102242231369,
+      "generation_ms": 0.05891919136047363,
+      "wall_ms": 361.34069999388885,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 31.54926374554634,
+      "generation_ms": 0.053452327847480774,
+      "wall_ms": 1091.2738000042737,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 31.37045167386532,
+      "generation_ms": 0.07926858961582184,
+      "wall_ms": 359.23030000412837,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 20.210640504956245,
+      "generation_ms": 0.054370611906051636,
+      "wall_ms": 349.3177000054857,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 27.333088219165802,
+      "generation_ms": 0.055983662605285645,
+      "wall_ms": 356.264399990323,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 25.05072019994259,
+      "generation_ms": 0.06000325083732605,
+      "wall_ms": 353.32469998684246,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 21.16282470524311,
+      "generation_ms": 0.05244836211204529,
+      "wall_ms": 352.9835999943316,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "generative",
+      "pipeline_ms": 170.83471082150936,
+      "generation_ms": 141.28443412482738,
+      "wall_ms": 499.35529999493156,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "generative",
+      "pipeline_ms": 166.6522864252329,
+      "generation_ms": 137.12539337575436,
+      "wall_ms": 496.0456999979215,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "generative",
+      "pipeline_ms": 177.134582772851,
+      "generation_ms": 141.26805402338505,
+      "wall_ms": 1412.0867000019643,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 167.14386083185673,
+      "generation_ms": 136.4830993115902,
+      "wall_ms": 510.9643999894615,
+      "over_budget": false,
+      "guardrail_flags": [
+        "unsupported_claim_low_entailment"
+      ]
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 36.99641115963459,
+      "generation_ms": 0.0751987099647522,
+      "wall_ms": 648.6861000012141,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 21.557288244366646,
+      "generation_ms": 0.049892812967300415,
+      "wall_ms": 366.3291999982903,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 22.711627185344696,
+      "generation_ms": 0.05404278635978699,
+      "wall_ms": 367.83940000168514,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 27.128668501973152,
+      "generation_ms": 0.05864724516868591,
+      "wall_ms": 371.9896999973571,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 21.427426487207413,
+      "generation_ms": 0.052949413657188416,
+      "wall_ms": 367.65220000233967,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 22.051280364394188,
+      "generation_ms": 0.05368143320083618,
+      "wall_ms": 374.4118000031449,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 32.852599397301674,
+      "generation_ms": 0.05953013896942139,
+      "wall_ms": 377.13379999331664,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 24.25895445048809,
+      "generation_ms": 0.06202422082424164,
+      "wall_ms": 368.86190000222996,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 28.18206697702408,
+      "generation_ms": 0.054469332098960876,
+      "wall_ms": 426.7219000030309,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 26.915187016129494,
+      "generation_ms": 0.04961155354976654,
+      "wall_ms": 368.9009000081569,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 20.70685662329197,
+      "generation_ms": 0.0515766441822052,
+      "wall_ms": 358.34830001113005,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 168.60099136829376,
+      "generation_ms": 140.18261432647705,
+      "wall_ms": 508.3978000038769,
+      "over_budget": false,
+      "guardrail_flags": [
+        "unsupported_claim_low_entailment"
+      ]
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 26.353536173701286,
+      "generation_ms": 0.05549192428588867,
+      "wall_ms": 363.7733999930788,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 23.482492193579674,
+      "generation_ms": 0.04992261528968811,
+      "wall_ms": 361.3182999979472,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 20.133038982748985,
+      "generation_ms": 0.055965036153793335,
+      "wall_ms": 361.8415999953868,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 25.458568707108498,
+      "generation_ms": 0.0693388283252716,
+      "wall_ms": 367.1772000088822,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 160.45541502535343,
+      "generation_ms": 136.67603954672813,
+      "wall_ms": 498.6518000077922,
+      "over_budget": false,
+      "guardrail_flags": [
+        "unsupported_claim_low_entailment"
+      ]
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 22.7517019957304,
+      "generation_ms": 0.053159892559051514,
+      "wall_ms": 360.8198000001721,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 31.009940430521965,
+      "generation_ms": 0.06396882236003876,
+      "wall_ms": 666.8155000079423,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "generative",
+      "pipeline_ms": 173.5996939241886,
+      "generation_ms": 143.3412730693817,
+      "wall_ms": 508.01859999774024,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 29.69161793589592,
+      "generation_ms": 0.055691227316856384,
+      "wall_ms": 364.26529999880586,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 29.816389083862305,
+      "generation_ms": 0.04941225051879883,
+      "wall_ms": 365.55119999684393,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 156.01558052003384,
+      "generation_ms": 131.59740716218948,
+      "wall_ms": 489.93919999338686,
+      "over_budget": false,
+      "guardrail_flags": [
+        "unsupported_claim_low_entailment"
+      ]
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 167.7303910255432,
+      "generation_ms": 136.56220771372318,
+      "wall_ms": 503.5933000035584,
+      "over_budget": false,
+      "guardrail_flags": [
+        "unsupported_claim_low_entailment"
+      ]
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 19.752580672502518,
+      "generation_ms": 0.05484186112880707,
+      "wall_ms": 355.7610999996541,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 18.808195367455482,
+      "generation_ms": 0.0507645308971405,
+      "wall_ms": 353.02140000567306,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 40.117550641298294,
+      "generation_ms": 0.07703155279159546,
+      "wall_ms": 375.35809999099,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 19.851263612508774,
+      "generation_ms": 0.051703304052352905,
+      "wall_ms": 353.80240000085905,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 169.55945640802383,
+      "generation_ms": 140.28509333729744,
+      "wall_ms": 590.2595999941695,
+      "over_budget": false,
+      "guardrail_flags": [
+        "unsupported_claim_low_entailment"
+      ]
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 27.634941041469574,
+      "generation_ms": 0.058760866522789,
+      "wall_ms": 369.7641000035219,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 20.624622702598572,
+      "generation_ms": 0.04459172487258911,
+      "wall_ms": 362.48490000434685,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 26.152649894356728,
+      "generation_ms": 0.061392784118652344,
+      "wall_ms": 366.17380000825506,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 27.181876823306084,
+      "generation_ms": 0.05580298602581024,
+      "wall_ms": 369.79840000276454,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 23.22492189705372,
+      "generation_ms": 0.053219497203826904,
+      "wall_ms": 362.27019999932963,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 20.756028592586517,
+      "generation_ms": 0.05260854959487915,
+      "wall_ms": 360.7601999974577,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 171.48690298199654,
+      "generation_ms": 141.7287029325962,
+      "wall_ms": 521.5483000065433,
+      "over_budget": false,
+      "guardrail_flags": [
+        "unsupported_claim_low_entailment"
+      ]
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 29.08231131732464,
+      "generation_ms": 0.05075521767139435,
+      "wall_ms": 372.26689999806695,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 22.97021634876728,
+      "generation_ms": 0.05340948700904846,
+      "wall_ms": 365.6807000079425,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 38.312191143631935,
+      "generation_ms": 0.054759904742240906,
+      "wall_ms": 1241.5368000074523,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 23.761972784996033,
+      "generation_ms": 0.05422346293926239,
+      "wall_ms": 351.0932000062894,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 163.7654546648264,
+      "generation_ms": 136.55455224215984,
+      "wall_ms": 497.72549999761395,
+      "over_budget": false,
+      "guardrail_flags": [
+        "unsupported_claim_low_entailment"
+      ]
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 40.176479145884514,
+      "generation_ms": 0.05487166345119476,
+      "wall_ms": 367.50759999267757,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 160.08000262081623,
+      "generation_ms": 131.7598670721054,
+      "wall_ms": 490.05059999763034,
+      "over_budget": false,
+      "guardrail_flags": [
+        "unsupported_claim_low_entailment"
+      ]
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 22.370008751749992,
+      "generation_ms": 0.05279853940010071,
+      "wall_ms": 351.0511999920709,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "generative",
+      "pipeline_ms": 161.01757995784283,
+      "generation_ms": 134.49078425765038,
+      "wall_ms": 488.026599996374,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 22.704053670167923,
+      "generation_ms": 0.05173496901988983,
+      "wall_ms": 350.8377999969525,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 29.097050428390503,
+      "generation_ms": 0.07306411862373352,
+      "wall_ms": 357.5803999992786,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 36.33221425116062,
+      "generation_ms": 0.05203671753406525,
+      "wall_ms": 364.4172000058461,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 20.995892584323883,
+      "generation_ms": 0.06860680878162384,
+      "wall_ms": 348.39550001197495,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 29.43003922700882,
+      "generation_ms": 0.057077035307884216,
+      "wall_ms": 359.67879999952856,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 171.25644348561764,
+      "generation_ms": 141.15073718130589,
+      "wall_ms": 498.34419999388047,
+      "over_budget": false,
+      "guardrail_flags": [
+        "unsupported_claim_low_entailment"
+      ]
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 27.471385896205902,
+      "generation_ms": 0.06796605885028839,
+      "wall_ms": 357.5950999947963,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 29.377683997154236,
+      "generation_ms": 0.045767053961753845,
+      "wall_ms": 358.45440000412054,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "generative",
+      "pipeline_ms": 167.27334260940552,
+      "generation_ms": 138.04621808230877,
+      "wall_ms": 504.10620000911877,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 19.874485209584236,
+      "generation_ms": 0.05332939326763153,
+      "wall_ms": 348.89860000112094,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 24.353211745619774,
+      "generation_ms": 0.05510449409484863,
+      "wall_ms": 357.4297999875853,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 25.154581293463707,
+      "generation_ms": 0.056276097893714905,
+      "wall_ms": 354.30489999998827,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 20.89829370379448,
+      "generation_ms": 0.05607679486274719,
+      "wall_ms": 350.3344999917317,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 29.89145740866661,
+      "generation_ms": 0.05297921597957611,
+      "wall_ms": 1267.0429999998305,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "generative",
+      "pipeline_ms": 183.72528813779354,
+      "generation_ms": 144.939748570323,
+      "wall_ms": 517.1973999968031,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 29.681740328669548,
+      "generation_ms": 0.05405023694038391,
+      "wall_ms": 362.5077000033343,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "generative",
+      "pipeline_ms": 160.36349907517433,
+      "generation_ms": 130.74747659265995,
+      "wall_ms": 499.3411999894306,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 29.786335304379463,
+      "generation_ms": 0.059489160776138306,
+      "wall_ms": 364.02159999124706,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 20.064299926161766,
+      "generation_ms": 0.06421655416488647,
+      "wall_ms": 352.86850000557024,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 29.56998161971569,
+      "generation_ms": 0.05544349551200867,
+      "wall_ms": 360.9588000108488,
+      "over_budget": false,
+      "guardrail_flags": [
+        "low_confidence_or_off_topic"
+      ]
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 20.680569112300873,
+      "generation_ms": 0.05418062210083008,
+      "wall_ms": 351.4466999913566,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 21.839866414666176,
+      "generation_ms": 0.056937336921691895,
+      "wall_ms": 355.1601999934064,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "extractive",
+      "pipeline_ms": 24.16492998600006,
+      "generation_ms": 0.061083585023880005,
+      "wall_ms": 357.2056999983033,
+      "over_budget": false,
+      "guardrail_flags": []
+    },
+    {
+      "mode": "refused",
+      "pipeline_ms": 179.64592762291431,
+      "generation_ms": 141.38667657971382,
+      "wall_ms": 568.3377999957884,
+      "over_budget": false,
+      "guardrail_flags": [
+        "unsupported_claim_low_entailment"
+      ]
+    }
+  ],
+  "refinement_available_count": 0
+}
