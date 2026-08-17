@@ -29,6 +29,10 @@ contested, and [section 4](#4-latency) reports it rather than averaging it away.
 | **Deployment** | RunPod GPU Pod, started on demand — see [Deployment](#deployment) |
 | **Live API** | `https://kqipnoh0es5c6s-8000.proxy.runpod.net` — the Pod is started on demand, so this is up during review windows rather than continuously |
 
+<p align="center">
+  <img src="demo.gif" alt="Demo: asking a Hindi question by voice and getting a cited, grounded answer" width="720">
+</p>
+
 <details>
 <summary><b>Contents</b></summary>
 
