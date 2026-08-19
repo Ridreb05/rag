@@ -143,8 +143,12 @@ MIN_GENERATION_BUDGET_SECONDS = float(os.environ.get("VOICE_RAG_MIN_GENERATION_B
 REFINE_GENERATION_BUDGET_SECONDS = float(os.environ.get("VOICE_RAG_REFINE_GENERATION_BUDGET_SECONDS", "45"))
 MAX_AUDIO_BYTES = 15 * 1024 * 1024
 # Sarvam's BCP-47 codes; "or" -> "od-IN" is the one exception to the naive <code>-IN pattern.
+# "en" -> "en-IN" is not one of MSMARCO-XI's 14 translated languages (it is the
+# corpus's own source-language field, indexed as a pseudo-language — see
+# ingestion/build_corpus.py's ENGLISH_PSEUDO_CODE), but Sarvam transcribes it
+# under the same Indian-English code as every other language here.
 SARVAM_BCP47 = {
-    "as": "as-IN", "bn": "bn-IN", "gu": "gu-IN", "hi": "hi-IN", "kn": "kn-IN",
+    "as": "as-IN", "bn": "bn-IN", "en": "en-IN", "gu": "gu-IN", "hi": "hi-IN", "kn": "kn-IN",
     "ml": "ml-IN", "mr": "mr-IN", "ne": "ne-IN", "or": "od-IN", "pa": "pa-IN",
     "sa": "sa-IN", "ta": "ta-IN", "te": "te-IN", "ur": "ur-IN",
 }

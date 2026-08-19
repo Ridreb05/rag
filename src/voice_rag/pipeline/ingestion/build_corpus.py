@@ -37,6 +37,19 @@ logger = logging.getLogger(__name__)
 
 PROCESSED_DIR = Path("data/processed")
 
+# MSMARCO-XI has no native "en" split — English is the corpus's own source
+# language, carried as a field (English_passages / Eng_Query / Eng_Answer)
+# inside every one of the 14 translated-language files, not as a file of its
+# own. That source text is identical regardless of which language's file it
+# is read from (it is the shared pre-translation original), so "en" is built
+# by downloading one real language's file and reading its English field
+# instead of its translated one — no separate HF download is needed or
+# possible. Hindi is picked as that source purely because it is the
+# best-verified file in this codebase; any of the 14 would yield the same
+# English text.
+ENGLISH_PSEUDO_CODE = "en"
+ENGLISH_SOURCE_LANGUAGE = "hi"
+
 
 def _content_hash(text: str) -> str:
     normalized = " ".join(text.strip().split()).lower()
@@ -47,20 +60,26 @@ def build_corpus(
     lang: str, split: str, cache_dir: str | None = None, limit: int | None = None
 ) -> tuple[pd.DataFrame, pd.DataFrame, pd.DataFrame]:
     """Returns (queries_df, passages_df, qrels_df) for one (language, split)."""
-    local_path = download_split(lang, split, cache_dir=cache_dir)
+    is_english = lang == ENGLISH_PSEUDO_CODE
+    source_lang = ENGLISH_SOURCE_LANGUAGE if is_english else lang
+    local_path = download_split(source_lang, split, cache_dir=cache_dir)
     table = pq.read_table(local_path)
     n = table.num_rows if limit is None else min(limit, table.num_rows)
     df = table.slice(0, n).to_pandas()
 
+    # For "en", every field below reads its English counterpart instead of
+    # the translated one, and passage_id/language are stamped "en" (via
+    # `lang`, not `source_lang`) so the processed output is isolated from
+    # whichever language's raw file supplied the source text.
     queries_df = pd.DataFrame(
         {
             "query_id": df["query_id"],
             "language": lang,
             "split": split,
             "query_type": df["query_type"],
-            "query_text": df["query"],
+            "query_text": df["Eng_Query"] if is_english else df["query"],
             "eng_query_text": df["Eng_Query"],
-            "translated_answer": df["Answer"],
+            "translated_answer": df["Eng_Answer"] if is_english else df["Answer"],
             "eng_answer": df["Eng_Answer"],
         }
     )
@@ -78,7 +97,11 @@ def build_corpus(
             skipped_nonparallel += 1
             continue
         for idx in range(len(is_sel)):
-            text = (tr[idx] or "").strip()
+            # For "en", text_translated *is* the English text: downstream
+            # chunking/embedding only ever reads text_translated, so this is
+            # the one substitution that makes the rest of the pipeline work
+            # unmodified for the pseudo-language.
+            text = ((eng[idx] if is_english else tr[idx]) or "").strip()
             if not text:
                 continue
             h = _content_hash(text)
@@ -146,7 +169,7 @@ def main() -> None:
     args = parser.parse_args()
 
     for lang in args.languages:
-        if lang not in LANGUAGES:
+        if lang not in LANGUAGES and lang != ENGLISH_PSEUDO_CODE:
             raise SystemExit(f"unknown language code {lang!r}")
 
     for lang in args.languages:
