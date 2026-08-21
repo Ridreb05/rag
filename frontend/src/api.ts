@@ -42,9 +42,10 @@ export const translateText = (text: string) =>
     body: JSON.stringify({ text }),
   });
 
-export const submitVoice = (audio: Blob) => {
+export const submitVoice = ({ audio, language }: { audio: Blob; language: string }) => {
   const data = new FormData();
   data.append("audio", audio, `voice-query.${audio.type.includes("mp4") ? "mp4" : "webm"}`);
+  data.append("language", language);
   data.append("top_k", "10");
   return api<VoiceQueryResponse>("/v1/voice-query", { method: "POST", body: data });
 };

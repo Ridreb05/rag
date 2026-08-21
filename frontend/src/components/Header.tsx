@@ -28,7 +28,7 @@ export function Header({ health }: { health: HealthState }) {
       </a>
       <div className="flex items-center gap-3 sm:gap-6">
         <span className="hidden font-body text-xs font-bold uppercase tracking-widest text-clay-muted md:inline">
-          Hindi voice RAG
+          Multilingual voice RAG
         </span>
         <span className="inline-flex items-center gap-2 rounded-full bg-clay-pressed px-4 py-2 font-body text-xs font-bold uppercase tracking-wide text-clay-foreground shadow-clayPressed">
           <i className={`block h-2 w-2 rounded-full ${healthDotClasses[health]}`} />

@@ -25,6 +25,7 @@ import "./styles.css";
 
 import { ApiError, refineAnswer, submitText, submitVoice } from "./api";
 import type { HealthResponse, HistoryItem, Result, VoiceQueryResponse } from "./types";
+import { DEFAULT_LANGUAGE_CODE } from "./languages";
 import { Background } from "./components/Background";
 import { Header } from "./components/Header";
 import { QueryConsole } from "./components/QueryConsole";
@@ -36,6 +37,7 @@ import { ToastLayer } from "./components/ToastLayer";
 
 function App() {
   const [query, setQuery] = useState("");
+  const [language, setLanguage] = useState(DEFAULT_LANGUAGE_CODE);
   const [result, setResult] = useState<Result | null>(null);
   const [toast, setToast] = useState<string | null>(null);
   const [recording, setRecording] = useState(false);
@@ -126,7 +128,7 @@ function App() {
     const clean = query.trim();
     if (!clean || pending) return;
     setResult(null);
-    textMutation.mutate({ query: clean, top_k: 10 });
+    textMutation.mutate({ query: clean, top_k: 10, language });
   };
 
   const stopRecording = () => {
@@ -156,7 +158,7 @@ function App() {
         const audio = new Blob(chunks, { type: recorder.mimeType || "audio/webm" });
         if (audio.size) {
           setResult(null);
-          voiceMutation.mutate(audio);
+          voiceMutation.mutate({ audio, language });
         } else {
           setToast("No audio was captured. Please try again.");
         }
@@ -179,6 +181,8 @@ function App() {
         <QueryConsole
           query={query}
           setQuery={setQuery}
+          language={language}
+          setLanguage={setLanguage}
           pending={pending}
           recording={recording}
           micDisabled={micDisabled}

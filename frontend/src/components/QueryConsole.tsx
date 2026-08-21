@@ -1,16 +1,12 @@
 import { ArrowUpRight, CircleAlert, Mic, Square } from "lucide-react";
 import { ClayButton } from "./ui/ClayButton";
-
-const prompts = [
-  { language: "Hindi", text: "भारत का राष्ट्रीय खेल क्या है?" },
-  { language: "Hindi", text: "इंटरनेट कैसे काम करता है?" },
-  { language: "Hindi", text: "फ़ायरवॉल का उद्देश्य क्या है?" },
-  { language: "Hindi", text: "भारत की राजधानी क्या है?" },
-];
+import { LANGUAGES, languageByCode, languageDisplayName } from "../languages";
 
 interface QueryConsoleProps {
   query: string;
   setQuery: (value: string) => void;
+  language: string;
+  setLanguage: (value: string) => void;
   pending: boolean;
   recording: boolean;
   micDisabled: boolean;
@@ -22,6 +18,8 @@ interface QueryConsoleProps {
 export function QueryConsole({
   query,
   setQuery,
+  language,
+  setLanguage,
   pending,
   recording,
   micDisabled,
@@ -29,12 +27,34 @@ export function QueryConsole({
   onSubmit,
   onToggleRecording,
 }: QueryConsoleProps) {
+  const active = languageByCode(language);
+
   return (
     <section className="mx-auto w-[min(100%-32px,1280px)] py-10" aria-label="Ask the knowledge corpus">
       <div className="mb-4 flex items-center gap-3 font-body text-xs font-bold uppercase tracking-widest text-clay-muted">
         <span className="text-clay-accent">Live console</span>
         <i className="h-px flex-1 bg-clay-accent/15" />
-        <small>Hindi input · Top 10</small>
+        <small>{active.label} input · Top 10</small>
+      </div>
+
+      <div className="mb-4 flex flex-wrap items-center gap-2" role="radiogroup" aria-label="Question language">
+        {LANGUAGES.map((option) => (
+          <button
+            key={option.code}
+            type="button"
+            role="radio"
+            aria-checked={option.code === language}
+            disabled={pending}
+            onClick={() => setLanguage(option.code)}
+            className={`rounded-full px-4 py-2 font-body text-xs font-bold uppercase tracking-wide transition-all duration-200 disabled:pointer-events-none disabled:opacity-50 ${
+              option.code === language
+                ? "bg-gradient-to-br from-[#A78BFA] to-[#7C3AED] text-white shadow-clayButton"
+                : "bg-white text-clay-foreground shadow-clayCard hover:-translate-y-0.5 hover:shadow-clayCardHover"
+            }`}
+          >
+            {languageDisplayName(option)}
+          </button>
+        ))}
       </div>
 
       <form
@@ -56,7 +76,7 @@ export function QueryConsole({
               }
             }}
             maxLength={2000}
-            placeholder="Ask in Hindi…"
+            placeholder={active.placeholder}
             rows={3}
             disabled={pending}
             className="block w-full resize-y rounded-2xl border-0 bg-transparent px-6 py-5 pr-20 font-script text-lg text-clay-foreground outline-none placeholder:text-clay-muted disabled:opacity-60"
@@ -108,15 +128,15 @@ export function QueryConsole({
       <div className="mt-8 grid grid-cols-1 gap-4 sm:grid-cols-[140px_1fr] sm:items-start">
         <span className="pt-2 font-body text-xs font-bold uppercase tracking-widest text-clay-accentAlt">Try a signal</span>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          {prompts.map((prompt, index) => (
+          {active.prompts.map((prompt, index) => (
             <button
-              key={prompt.text}
-              onClick={() => setQuery(prompt.text)}
+              key={prompt}
+              onClick={() => setQuery(prompt)}
               className="flex min-h-[84px] items-start gap-3 rounded-[20px] bg-white/70 p-4 text-left shadow-clayCard backdrop-blur-xl transition-all duration-200 hover:-translate-y-1 hover:shadow-clayCardHover"
             >
               <b className="font-heading text-sm font-black text-clay-accentAlt">0{index + 1}</b>
               <span className="font-script text-sm text-clay-foreground [direction:auto] [unicode-bidi:plaintext]">
-                {prompt.text}
+                {prompt}
               </span>
             </button>
           ))}
@@ -126,7 +146,7 @@ export function QueryConsole({
       <div className="mt-6 flex items-center gap-3 border-t border-clay-accent/10 pt-6">
         <span className="shrink-0 font-body text-xs font-bold uppercase tracking-widest text-clay-muted">Live language</span>
         <b className="rounded-full bg-clay-accent/8 px-4 py-1.5 font-script text-sm font-normal text-clay-foreground shadow-[inset_0_0_0_1px_rgba(124,58,237,0.12)]">
-          हिन्दी · Hindi
+          {languageDisplayName(active)}
         </b>
       </div>
     </section>

@@ -11,7 +11,7 @@ const healthDotClasses: Record<HealthState, string> = {
 };
 
 const steps = [
-  { icon: Radio, title: "Capture", copy: "Native browser audio or Hindi text enters the pipeline." },
+  { icon: Radio, title: "Capture", copy: "Native browser audio or typed text enters the pipeline." },
   { icon: Database, title: "Retrieve", copy: "The deployment’s language index surfaces its strongest evidence." },
   { icon: Search, title: "Rerank", copy: "The best passages are reordered by relevance." },
   { icon: ShieldCheck, title: "Ground", copy: "Guardrails decide whether to answer or refuse." },
