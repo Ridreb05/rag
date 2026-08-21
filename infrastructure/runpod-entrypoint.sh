@@ -83,7 +83,7 @@ fi
 # host's driver (see Dockerfile). Two venvs, two CUDA runtimes, one GPU: the
 # isolation avoids a dependency conflict, not the GPU-memory sharing, which
 # --gpu-memory-utilization below still has to budget for by hand.
-if [ "${VOICE_RAG_GENERATION_BACKEND:-gemini}" = "vllm" ]; then
+if [ "${VOICE_RAG_GENERATION_BACKEND:-vllm}" = "vllm" ]; then
   vllm_model="${VOICE_RAG_VLLM_MODEL:-Qwen/Qwen3.5-4B}"
   vllm_port="${VOICE_RAG_VLLM_PORT:-8001}"
   export VOICE_RAG_VLLM_BASE_URL="${VOICE_RAG_VLLM_BASE_URL:-http://127.0.0.1:${vllm_port}/v1}"
