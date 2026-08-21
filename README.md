@@ -9,28 +9,29 @@
 <img alt="Qdrant" src="https://img.shields.io/badge/vector%20db-Qdrant-DC244C?logo=qdrant&logoColor=white">
 <img alt="vLLM" src="https://img.shields.io/badge/generation-vLLM%20%2B%20Qwen3.5--4B-8A2BE2">
 <img alt="Latency" src="https://img.shields.io/badge/latency-P50%2027ms%20%2F%20200ms%20budget-2ea44f">
-<img alt="Tests" src="https://img.shields.io/badge/tests-113%20passed-2ea44f?logo=pytest&logoColor=white">
+<img alt="Tests" src="https://img.shields.io/badge/tests-119%20passed-2ea44f?logo=pytest&logoColor=white">
+<img alt="Languages" src="https://img.shields.io/badge/languages-Hindi%20%C2%B7%20Bengali%20%C2%B7%20English-F97316">
 </p>
 
 Submission for **HH Goa 2026 Shortlisting Task 2: Build a Voice-Enabled RAG Model**.
 
-A user asks a question in Hindi — typed or spoken. The system transcribes it, retrieves evidence
-from [`ai4bharat/MSMARCO-XI`](https://huggingface.co/datasets/ai4bharat/MSMARCO-XI), and answers
-with citations to the exact passages supporting each claim — or refuses, when the evidence isn't
-there. Generation runs on a model served on the same GPU rather than behind an API, which is what
-brings the median request to 27ms against a 200ms budget. The tail is where the budget is
-contested, and [section 4](#4-latency) reports it rather than averaging it away.
+A user asks a question in Hindi, Bengali, or English, typed or spoken. The system transcribes it,
+retrieves evidence from [`ai4bharat/MSMARCO-XI`](https://huggingface.co/datasets/ai4bharat/MSMARCO-XI),
+and answers with citations to the exact passages supporting each claim. If the evidence isn't
+there, it refuses instead. Generation runs on a model served on the same GPU instead of behind an
+API, which is why the median request lands at 27ms against a 200ms budget. [Section 4](#4-latency)
+reports the tail instead of averaging it away.
 
 | | |
 |---|---|
 | **GitHub** | https://github.com/Ridreb05/rag |
-| **Dataset** | `ai4bharat/MSMARCO-XI`, Hindi `validation` split |
-| **Index** | 964,603 chunks, version `full1`, indexed in full |
-| **Deployment** | RunPod GPU Pod, started on demand — see [Deployment](#deployment) |
-| **Live API** | `https://<POD-ID>-8000.proxy.runpod.net` — the Pod is started on demand, so this is up during review windows rather than continuously |
+| **Dataset** | `ai4bharat/MSMARCO-XI`, Hindi + Bengali + English, `validation` split |
+| **Index** | Hindi 964,603 chunks, Bengali 958,378 chunks, and English, version `full1`, one Qdrant instance with three collections |
+| **Deployment** | Single RunPod GPU Pod serving all three languages, started on demand. See [Deployment](#deployment). |
+| **Live API** | `https://<POD-ID>-8000.proxy.runpod.net`. The Pod runs on demand, so this is live during review windows rather than continuously. |
 
 <p align="center">
-  <img src="demo.gif" alt="Demo: asking a Hindi question by voice and getting a cited, grounded answer" width="720">
+  <img src="demo.gif" alt="Demo: asking a question by voice and getting a cited, grounded answer" width="720">
 </p>
 
 <details>
@@ -39,6 +40,7 @@ contested, and [section 4](#4-latency) reports it rather than averaging it away.
 - [Requirements at a glance](#requirements-at-a-glance)
 - [Tech stack](#tech-stack)
 - [Architecture](#architecture)
+- [Multi-language serving](#multi-language-serving)
 - [1. Speech-to-text](#1-speech-to-text)
 - [2. Chunking](#2-chunking)
 - [3. Retrieval](#3-retrieval)
@@ -64,7 +66,7 @@ contested, and [section 4](#4-latency) reports it rather than averaging it away.
 |---|---|---|---|
 | 1 | Speech-to-text (Sarvam or ElevenLabs) | Sarvam `saarika` REST | [Speech-to-text](#1-speech-to-text) |
 | 2 | Non-naive chunking | 3 strategies + metadata-aware identity | [Chunking](#2-chunking) |
-| 3 | Under 200ms | **P50 26.9ms · P70 31.4ms · P100 183.7ms**, 150/150 in budget on a warm index; 138/150 and P100 264.4ms on a cold one — both reported | [Latency](#4-latency) |
+| 3 | Under 200ms | **P50 26.9ms · P70 31.4ms · P100 183.7ms**, 150/150 in budget on a warm index; 138/150 and P100 264.4ms on a cold one — both reported (Hindi; see [known limitations](#known-limitations) on Bengali/English) | [Latency](#4-latency) |
 | 4 | P50 / P70 / P100 analytics | n=150 deployed over HTTPS ×2, n=1000 in-process, broken out per stage | [Latency](#4-latency) |
 | 5 | Proper harness, not a raw prompt call | Typed orchestrator: routing, deadline, retries, recovery, grounding | [Harness](#5-generation-harness) |
 | 6 | Guardrails — knows when *not* to answer | 4 layers; **16 of 30 generated answers refused** on live data | [Guardrails](#6-guardrails) |
@@ -104,6 +106,59 @@ Voice input → Sarvam STT → Chunking / Retrieval (vector DB) → Answer gener
 transcription step in front. Generation is served by a local vLLM process on the same GPU as
 retrieval — see [Generation backend](#generation-backend) for the measurements behind that choice,
 which removed roughly two seconds of network round trip per generated answer.
+
+---
+
+## Multi-language serving
+
+One process, one Qdrant instance, one URL. Hindi, Bengali, and English are served side by side.
+Every request carries a `language` field. That field selects the Qdrant collection, the BM25
+index, and the off-topic gate the request is answered from. Three dicts hold this
+(`services.collections`, `services.bm25_indexes`, `services.off_topic_gates`), built once at
+startup and looked up per request. A request for an unconfigured language is rejected before any
+retrieval work runs, instead of being silently answered from the wrong corpus.
+
+**The GPU models are not duplicated per language.** `BAAI/bge-m3`, the reranker, the NLI grounding
+validator, and the vLLM generator are already multilingual, so each stays a single shared instance
+across all three languages. Only the data side (collection, BM25 index, corpus centroid) changes
+per request. `GenerationHarness.answer()` takes its off-topic gate as a per-call argument for this
+reason: one harness instance serves three languages, each with its own gate.
+
+**English has no native split in the dataset.** MSMARCO-XI ships 14 translated languages, and
+English is not one of them. It exists only as a source-text field (`English_passages`) inside
+every other language's file, sitting next to that language's translation. `build_corpus.py` treats
+`en` as a pseudo-language: it reads that field out of one real language's file (Hindi's, here)
+instead of the translation. Every other stage of the pipeline treats it as an ordinary language.
+
+**Config:**
+
+| variable | effect |
+|---|---|
+| `VOICE_RAG_LANGUAGES` | Comma-separated languages this process serves, for example `hi,bn,en`. |
+| `VOICE_RAG_BOOTSTRAP_LANGUAGES` | Comma-separated languages to build on pod boot. Each one bootstraps in turn: corpus download, chunking, embed, upsert, finalize, all against the one running Qdrant server. The same per-language state manifest and bootstrap lock make a restart a no-op for languages that are already complete. Once every listed language finishes, the pod serves all of them without a second restart. |
+| `VOICE_RAG_HEALTH_REQUIRE_ALL_LANGUAGES` | Default `1`. `/v1/health` reports ready only when every configured language is ready. Set to `0` to let the pod serve whichever languages are already built while another is still bootstrapping. |
+
+**Corpus scale, indexed in full on one Qdrant instance:**
+
+| language | unique passages | chunks |
+|---|---:|---:|
+| Hindi | 953,388 | 964,603 |
+| Bengali | 954,792 | 958,378 |
+| English | sourced from Hindi's file, see above | — |
+
+Bengali's split has 97,941 queries and 977,545 passage occurrences, a dedup ratio of 0.977.
+Embedding ran at roughly 205 chunks per second on the deployment's RTX 4090. `/v1/health` reports
+one `qdrant_collection`/`bm25`/`index_complete`/`ready` block per language
+(`chunks_hi_vfull1`, `chunks_bn_vfull1`, `chunks_en_vfull1`, one Qdrant instance, three
+collections). Six of the 119 passing tests are direct regression coverage for per-language
+routing: one proves a shared harness instance applies the right language's off-topic gate per
+call, and others prove retrieval reaches the requested language's own BM25 index and Qdrant
+collection.
+
+**Hardware note.** This deployment's pinned `torch==2.6.0+cu118` targets
+`sm_50/60/70/75/80/86/90`. Blackwell GPUs such as the RTX 5090 (`sm_120`) are not compatible with
+it and fail during embedding. RTX 4090 (Ada) is the proven GPU for this image, the same hardware
+[section 4](#4-latency)'s latency numbers were measured on.
 
 ---
 
@@ -483,15 +538,19 @@ DF-filtering BM25's high-frequency terms (faster, but changes the top result on 
 
 ## Interface
 
-The SPA in `frontend/` is served by the same process as the API, so the deployed URL is both. It
-records with `MediaRecorder` and posts to `/v1/voice-query`, or takes typed Hindi.
+The SPA in `frontend/` is served by the same process as the API, so the deployed URL is both. A
+language selector (Hindi, Bengali, English, in `frontend/src/languages.ts`) sets which language
+every request is tagged with. Sample prompts, placeholder text, and the live-language badge all
+switch with it, and the choice is sent on both the typed and the voice path
+(`submitText`/`submitVoice`), not just displayed. It records with `MediaRecorder` and posts to
+`/v1/voice-query`.
 
 The result card is built to show the reader what the system did, not just its answer: the per-stage
 `latency_ms` breakdown against the budget line, `stt_ms` separately when the question was spoken,
 every cited chunk with its ID and rerank score, and the mode the harness chose. When a query was
 answered extractively because the deadline pre-empted generation, the card says so and swaps in the
 phase-two answer when it arrives. An on-demand English toggle calls `/v1/translate` for readers who
-do not read Hindi, leaving the cited passages in the original.
+do not read the corpus's language, leaving the cited passages in the original.
 
 ## API
 
@@ -501,7 +560,7 @@ do not read Hindi, leaving the cited passages in the original.
 | `POST` | `/v1/voice-query` | `multipart/form-data` audio → transcribe, then the same path |
 | `POST` | `/v1/query/refine` | phase two: regenerate against the candidates already retrieved, by `trace_id`. No deadline. |
 | `POST` | `/v1/translate` | render an answer in English, on the resident model. Display aid only. |
-| `GET` | `/v1/health` | readiness: manifest and Qdrant point count must agree; reports the generation backend and its reachability |
+| `GET` | `/v1/health` | readiness, per configured language: manifest and Qdrant point count must agree for each; also reports the generation backend and its reachability |
 | `POST` | `/v1/admin/export-index/*` | start / poll / download an index export, for seeding a new volume |
 
 ```bash
@@ -509,6 +568,11 @@ curl -X POST https://<pod>.proxy.runpod.net/v1/query \
   -H 'content-type: application/json' \
   -d '{"query": "ताज महल कहाँ है?", "language": "hi", "top_k": 10}'
 ```
+
+`language` is `hi`, `bn`, or `en` on this deployment. It selects which collection, BM25 index, and
+off-topic gate the request hits (see [Multi-language serving](#multi-language-serving)); it is not
+just a label on the response. An unconfigured language gets a 400 instead of a silent answer from
+the wrong corpus.
 
 Every response carries `trace_id`, `answer_text`, `mode` (`extractive` | `generative` | `refused`),
 `confidence`, `guardrail_flags`, `evidence[]` with the chunk IDs and text behind the answer, and
@@ -520,7 +584,11 @@ OpenAPI docs are at `/docs`.
 A single deployment: a **RunPod GPU Pod** running the full index and the local model, started when
 needed rather than continuously. `infrastructure/runpod-entrypoint.sh` runs Qdrant on localhost,
 starts `vllm serve`, and then uvicorn on port 8000 behind RunPod's HTTPS proxy — one container,
-three processes.
+three processes. The same container serves Hindi, Bengali, and English.
+
+On boot, the entrypoint bootstraps every language listed in `VOICE_RAG_BOOTSTRAP_LANGUAGES` one
+after another, against that one Qdrant server. Once every language is built, it serves all of
+them. See [Multi-language serving](#multi-language-serving) for the mechanics and the evidence.
 
 It is built to survive stop/start on a persistent network volume, which is what makes an on-demand
 Pod practical rather than a 24/7 cost:
@@ -581,7 +649,7 @@ src/voice_rag/
     generation/           # vLLM backend, factory, typed schemas, the harness
     stt/                  # Sarvam speech-to-text client
   api/
-    main.py               # FastAPI app: lifespan, routes, readiness, SPA mount
+    main.py               # FastAPI app: lifespan, per-language routing, readiness, SPA mount
     rate_limit.py         # Per-IP sliding-window rate limit (20 req/60s/worker)
 scripts/                  # Resumable full-index builder, smoke-index helper
 evaluation/
@@ -591,8 +659,10 @@ benchmark/
   deployed_benchmark.py   # HTTPS against a live deployment; server-reported pipeline_ms
   latency_benchmark.py    # Same pipeline in-process, per-stage isolation
   voice_e2e_benchmark.py  # /v1/voice-query wall clock, including STT
-frontend/                 # React 18 + TypeScript + Vite SPA
-infrastructure/           # Container entrypoints
+frontend/
+  src/languages.ts        # Hindi/Bengali/English config: labels, prompts, placeholders
+infrastructure/
+  runpod-entrypoint.sh    # Qdrant + vLLM + per-language bootstrap loop + uvicorn
 reports/                  # Benchmark evidence cited above
 ```
 
@@ -641,7 +711,7 @@ in `reports/latency_benchmark/`.
 ## Tests
 
 ```powershell
-uv run pytest -q      # 113 passed, 6 deselected (slow/GPU/provider), 2026-08-17
+uv run pytest -q      # 119 passed, 6 deselected (slow/GPU/provider), 2026-08-22
 uv run pytest -m slow tests/test_ml_integration.py tests/test_sarvam_integration.py
 ```
 
@@ -678,8 +748,16 @@ providers and are opt-in.
   so longer answers truncate. `VOICE_RAG_VLLM_MAX_TOKENS` trades latency back for words.
 - **Input-side safety lost a layer** when generation moved to a self-hosted model — see
   [Guardrails](#6-guardrails).
-- MSMARCO-XI covers 14 Indic languages, but one API process serves one configured language
-  collection. The request-level `language` field labels the response; it does not switch indexes.
+- **Section 4's latency and retrieval-quality figures are Hindi-only.** Bengali and English are
+  indexed and served on the same deployment (see [Multi-language serving](#multi-language-serving)).
+  Correctness is covered by tests and a live `/v1/health` check per language, but neither has its
+  own n=150 latency run or Recall@10/MRR/NDCG evaluation the way Hindi does. The pipeline is
+  identical per language, so the Hindi figures are a reasonable proxy, not a substitute for
+  measuring each language directly.
+- MSMARCO-XI covers 14 languages in total. This deployment serves the 3 with real corpus data
+  indexed: Hindi, Bengali, English. Adding another language means setting
+  `VOICE_RAG_BOOTSTRAP_LANGUAGES`, not writing code, for any language MSMARCO-XI ships a native
+  split for.
 - The retrieval sub-stage's P100 (336.4ms in-process) exceeds target on rare queries where several
   stage tails coincide, even with BM25 and sparse individually bounded.
 - Latency depends materially on GPU: P50 26.9ms on a 4090 versus 74.1ms on a 4060 Laptop, same code
