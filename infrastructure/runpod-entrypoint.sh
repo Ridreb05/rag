@@ -186,79 +186,124 @@ mkdir -p "$data_root/data/full_index"
 export VOICE_RAG_INDEX_STATE_PATH="/app/data/full_index/${index_language}_${index_split}_${index_version}.state.json"
 export VOICE_RAG_REQUIRE_COMPLETE_INDEX="${VOICE_RAG_REQUIRE_COMPLETE_INDEX:-1}"
 
+# One or more languages to bootstrap, comma-separated (e.g. "hi,bn,en").
+# Falls back to the single VOICE_RAG_LANGUAGE value when unset -- today's
+# exact single-language behavior, unchanged. Each language bootstraps
+# sequentially against the one running Qdrant server: a real server process
+# handles concurrent collections fine, but there is only one GPU here, so
+# running these one after another (not in parallel) is the actual bottleneck,
+# not a safety requirement.
+bootstrap_languages="${VOICE_RAG_BOOTSTRAP_LANGUAGES:-$index_language}"
+
 # Keep this enabled for the first boot and later restarts. The index builder
-# verifies its state and exits quickly when the selected version is complete.
+# verifies its state and exits quickly for any language whose version is
+# already complete -- so re-running this list on a restart is cheap for
+# languages already built and only does real work for the ones that aren't.
 if [ "${VOICE_RAG_BOOTSTRAP_INDEX:-0}" = "1" ]; then
-  bootstrap_marker="$data_root/data/full_index/${index_language}_${index_split}_${index_version}_bootstrap_complete"
-  bootstrap_lock_dir="$data_root/data/full_index/.${index_language}_${index_split}_${index_version}.bootstrap.lock"
-  if ! mkdir "$bootstrap_lock_dir" 2>/dev/null; then
-    # A forced Pod stop can leave this empty directory on the persistent
-    # volume. Recovery is deliberately opt-in: automatically removing it
-    # could allow two Pods to write the same BM25 index concurrently.
-    if [ "${VOICE_RAG_RECOVER_STALE_BOOTSTRAP_LOCK:-0}" = "1" ]; then
-      echo "Recovering explicitly approved stale bootstrap lock: $bootstrap_lock_dir"
-      rm -f "$bootstrap_lock_dir/owner"
-      if ! rmdir "$bootstrap_lock_dir" 2>/dev/null; then
-        echo "Bootstrap lock is still active or not empty: $bootstrap_lock_dir" >&2
+  built_languages=""
+  old_ifs="$IFS"
+  IFS=','
+  for lang in $bootstrap_languages; do
+    IFS="$old_ifs"
+    lang=$(printf '%s' "$lang" | tr -d '[:space:]')
+    if [ -z "$lang" ]; then
+      continue
+    fi
+
+    bootstrap_marker="$data_root/data/full_index/${lang}_${index_split}_${index_version}_bootstrap_complete"
+    bootstrap_lock_dir="$data_root/data/full_index/.${lang}_${index_split}_${index_version}.bootstrap.lock"
+    lang_state_path="$data_root/data/full_index/${lang}_${index_split}_${index_version}.state.json"
+
+    if ! mkdir "$bootstrap_lock_dir" 2>/dev/null; then
+      # A forced Pod stop can leave this empty directory on the persistent
+      # volume. Recovery is deliberately opt-in: automatically removing it
+      # could allow two Pods to write the same BM25 index concurrently.
+      if [ "${VOICE_RAG_RECOVER_STALE_BOOTSTRAP_LOCK:-0}" = "1" ]; then
+        echo "[$lang] Recovering explicitly approved stale bootstrap lock: $bootstrap_lock_dir"
+        rm -f "$bootstrap_lock_dir/owner"
+        if ! rmdir "$bootstrap_lock_dir" 2>/dev/null; then
+          echo "[$lang] Bootstrap lock is still active or not empty: $bootstrap_lock_dir" >&2
+          exit 1
+        fi
+        if ! mkdir "$bootstrap_lock_dir" 2>/dev/null; then
+          echo "[$lang] Bootstrap lock is still active or not empty: $bootstrap_lock_dir" >&2
+          exit 1
+        fi
+      else
+        echo "[$lang] Another bootstrap may be using $bootstrap_lock_dir; refusing to corrupt the shared index." >&2
+        echo "If every other Pod using this volume is stopped, set VOICE_RAG_RECOVER_STALE_BOOTSTRAP_LOCK=1 for one restart." >&2
         exit 1
       fi
-      if ! mkdir "$bootstrap_lock_dir" 2>/dev/null; then
-        echo "Bootstrap lock is still active or not empty: $bootstrap_lock_dir" >&2
-        exit 1
+    fi
+    printf '%s\n' "pid=$$ started=$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$bootstrap_lock_dir/owner"
+
+    chunks_path="$data_root/data/processed/${lang}/${index_split}_chunks.parquet"
+    passages_path="$data_root/data/processed/${lang}/${index_split}_passages.parquet"
+    if [ ! -f "$chunks_path" ]; then
+      if [ ! -f "$passages_path" ]; then
+        echo "[$lang] Downloading and normalizing the corpus."
+        /app/.venv/bin/python -m voice_rag.pipeline.ingestion.build_corpus --languages "$lang" --split "$index_split"
+      else
+        echo "[$lang] Reusing persisted normalized corpus."
       fi
+      echo "[$lang] Building chunks from the persisted corpus."
+      /app/.venv/bin/python -m voice_rag.pipeline.chunking.build_chunks --languages "$lang" --split "$index_split"
     else
-      echo "Another bootstrap may be using $bootstrap_lock_dir; refusing to corrupt the shared index." >&2
-      echo "If every other Pod using this volume is stopped, set VOICE_RAG_RECOVER_STALE_BOOTSTRAP_LOCK=1 for one restart." >&2
-      exit 1
+      echo "[$lang] Reusing persisted chunks."
     fi
-  fi
-  printf '%s\n' "pid=$$ started=$(date -u +%Y-%m-%dT%H:%M:%SZ)" > "$bootstrap_lock_dir/owner"
 
-  chunks_path="$data_root/data/processed/${index_language}/${index_split}_chunks.parquet"
-  passages_path="$data_root/data/processed/${index_language}/${index_split}_passages.parquet"
-  if [ ! -f "$chunks_path" ]; then
-    if [ ! -f "$passages_path" ]; then
-      echo "Downloading and normalizing the corpus."
-      /app/.venv/bin/python -m voice_rag.pipeline.ingestion.build_corpus --languages "$index_language" --split "$index_split"
-    else
-      echo "Reusing persisted normalized corpus."
+    # An old bootstrap has no state manifest, so its partial Qdrant/BM25 data
+    # cannot be trusted. Reset it once. New bootstraps write a manifest after
+    # every committed batch and resume without discarding completed work.
+    set -- /app/.venv/bin/python scripts/build_full_index.py \
+      --language "$lang" \
+      --split "$index_split" \
+      --index-version "$index_version" \
+      --qdrant-url "$QDRANT_URL" \
+      --optimizer-wait-seconds "${VOICE_RAG_OPTIMIZER_WAIT_SECONDS:-900}"
+    if [ ! -f "$lang_state_path" ]; then
+      set -- "$@" --reset
     fi
-    echo "Building chunks from the persisted corpus."
-    /app/.venv/bin/python -m voice_rag.pipeline.chunking.build_chunks --languages "$index_language" --split "$index_split"
-  else
-    echo "Reusing persisted chunks."
-  fi
-
-  # An old bootstrap has no state manifest, so its partial Qdrant/BM25 data
-  # cannot be trusted. Reset it once. New bootstraps write a manifest after
-  # every committed batch and resume without discarding completed work.
-  set -- /app/.venv/bin/python scripts/build_full_index.py \
-    --language "$index_language" \
-    --split "$index_split" \
-    --index-version "$index_version" \
-    --qdrant-url "$QDRANT_URL" \
-    --optimizer-wait-seconds "${VOICE_RAG_OPTIMIZER_WAIT_SECONDS:-900}"
-  if [ ! -f "$state_path" ]; then
-    set -- "$@" --reset
-  fi
-  if [ -n "${VOICE_RAG_BOOTSTRAP_LIMIT:-}" ]; then
-    case "$VOICE_RAG_BOOTSTRAP_LIMIT" in
-      *[!0-9]*|"")
+    if [ -n "${VOICE_RAG_BOOTSTRAP_LIMIT:-}" ]; then
+      case "$VOICE_RAG_BOOTSTRAP_LIMIT" in
+        *[!0-9]*|"")
+          echo "VOICE_RAG_BOOTSTRAP_LIMIT must be a positive integer" >&2
+          exit 1
+          ;;
+      esac
+      if [ "$VOICE_RAG_BOOTSTRAP_LIMIT" -lt 1 ]; then
         echo "VOICE_RAG_BOOTSTRAP_LIMIT must be a positive integer" >&2
         exit 1
-        ;;
-    esac
-    if [ "$VOICE_RAG_BOOTSTRAP_LIMIT" -lt 1 ]; then
-      echo "VOICE_RAG_BOOTSTRAP_LIMIT must be a positive integer" >&2
-      exit 1
+      fi
+      set -- "$@" --limit "$VOICE_RAG_BOOTSTRAP_LIMIT"
     fi
-    set -- "$@" --limit "$VOICE_RAG_BOOTSTRAP_LIMIT"
-  fi
-  echo "Starting resumable index bootstrap. State: $state_path"
-  "$@"
-  touch "$bootstrap_marker"
-  release_bootstrap_lock
-  echo "Index bootstrap completed."
+    echo "[$lang] Starting resumable index bootstrap. State: $lang_state_path"
+    "$@"
+    touch "$bootstrap_marker"
+    release_bootstrap_lock
+    echo "[$lang] Index bootstrap completed."
+
+    if [ -z "$built_languages" ]; then
+      built_languages="$lang"
+    else
+      built_languages="$built_languages,$lang"
+    fi
+  done
+  IFS="$old_ifs"
+
+  # Serve every language just bootstrapped, unless the operator already
+  # pinned VOICE_RAG_LANGUAGES explicitly -- an explicit value always wins,
+  # e.g. to bootstrap a language without yet exposing it to traffic. When
+  # only one language was bootstrapped this stays unset, so main.py takes
+  # its existing single-language path (VOICE_RAG_LANGUAGE alone) -- today's
+  # exact behavior, unchanged.
+  case "$built_languages" in
+    *,*)
+      : "${VOICE_RAG_LANGUAGES:=$built_languages}"
+      export VOICE_RAG_LANGUAGES
+      echo "Serving languages: $VOICE_RAG_LANGUAGES"
+      ;;
+  esac
 fi
 
 echo "Starting Voice RAG API on port 8000."
