@@ -59,17 +59,65 @@ DEFAULT_LANGUAGE = os.environ.get("VOICE_RAG_LANGUAGE", "hi")
 INDEX_VERSION = os.environ.get("VOICE_RAG_INDEX_VERSION", "full1")
 QDRANT_URL = os.environ.get("QDRANT_URL")
 QDRANT_PATH = os.environ.get("QDRANT_PATH", "data/full_index/qdrant")
-BM25_PATH = os.environ.get("BM25_PATH", f"data/full_index/bm25/{DEFAULT_LANGUAGE}_validation_{INDEX_VERSION}")
-INDEX_STATE_PATH = Path(
-    os.environ.get(
-        "VOICE_RAG_INDEX_STATE_PATH",
-        f"data/full_index/{DEFAULT_LANGUAGE}_validation_{INDEX_VERSION}.state.json",
-    )
-)
+
+# A process serves one language unless VOICE_RAG_LANGUAGES lists several
+# (comma-separated). Unset, this reduces to exactly today's single-language
+# behavior: SUPPORTED_LANGUAGES == [DEFAULT_LANGUAGE], and every per-language
+# dict built below ends up with exactly one key computed by the same
+# expressions the old scalars used.
+_LANGUAGES_ENV = os.environ.get("VOICE_RAG_LANGUAGES")
+if _LANGUAGES_ENV:
+    SUPPORTED_LANGUAGES: list[str] = [lang.strip() for lang in _LANGUAGES_ENV.split(",") if lang.strip()]
+    if not SUPPORTED_LANGUAGES:
+        raise RuntimeError("VOICE_RAG_LANGUAGES is set but empty after parsing")
+    # VOICE_RAG_LANGUAGE keeps meaning "the default when a caller omits
+    # `language`" -- honor it if it names one of the configured languages,
+    # else fall back to the first configured language rather than a bare
+    # "hi" that might not even be in SUPPORTED_LANGUAGES.
+    if "VOICE_RAG_LANGUAGE" not in os.environ or DEFAULT_LANGUAGE not in SUPPORTED_LANGUAGES:
+        DEFAULT_LANGUAGE = SUPPORTED_LANGUAGES[0]
+else:
+    SUPPORTED_LANGUAGES = [DEFAULT_LANGUAGE]
+
+
+def _bm25_path_for(language: str) -> str:
+    override = os.environ.get(f"VOICE_RAG_BM25_PATH_{language.upper()}")
+    if override:
+        return override
+    if language == DEFAULT_LANGUAGE and len(SUPPORTED_LANGUAGES) == 1:
+        # Preserves the exact single-language env var the RunPod entrypoint
+        # already sets (infrastructure/runpod-entrypoint.sh), so a
+        # single-language deployment needs no changes to that script.
+        return os.environ.get("BM25_PATH", f"data/full_index/bm25/{language}_validation_{INDEX_VERSION}")
+    return f"data/full_index/bm25/{language}_validation_{INDEX_VERSION}"
+
+
+def _index_state_path_for(language: str) -> Path:
+    override = os.environ.get(f"VOICE_RAG_INDEX_STATE_PATH_{language.upper()}")
+    if override:
+        return Path(override)
+    if language == DEFAULT_LANGUAGE and len(SUPPORTED_LANGUAGES) == 1:
+        return Path(
+            os.environ.get(
+                "VOICE_RAG_INDEX_STATE_PATH",
+                f"data/full_index/{language}_validation_{INDEX_VERSION}.state.json",
+            )
+        )
+    return Path(f"data/full_index/{language}_validation_{INDEX_VERSION}.state.json")
+
+
+BM25_PATHS: dict[str, str] = {lang: _bm25_path_for(lang) for lang in SUPPORTED_LANGUAGES}
+INDEX_STATE_PATHS: dict[str, Path] = {lang: _index_state_path_for(lang) for lang in SUPPORTED_LANGUAGES}
 # The RunPod entrypoint enables this only after it has completed a bootstrap.
 # Keeping it opt-in preserves the lightweight local-dev workflow where a
 # developer may deliberately point the API at a small hand-built collection.
 REQUIRE_COMPLETE_INDEX = os.environ.get("VOICE_RAG_REQUIRE_COMPLETE_INDEX", "0") == "1"
+# Whether /v1/health requires every configured language to be ready, or just
+# one. Default "1" (all) matches a deployment probe's usual meaning -- "this
+# pod is fully up". "0" is for a rolling multi-language bootstrap: the pod
+# keeps accepting traffic for whichever languages are already ready while
+# another language is still being populated in the background.
+HEALTH_REQUIRE_ALL_LANGUAGES = os.environ.get("VOICE_RAG_HEALTH_REQUIRE_ALL_LANGUAGES", "1") == "1"
 LOAD_GROUNDING_VALIDATOR = os.environ.get("VOICE_RAG_LOAD_GROUNDING_VALIDATOR", "1") == "1"
 # Building this gate re-embeds a text sample locally at startup (see
 # _try_build_off_topic_gate). On a throttled shared-CPU host that step can
@@ -164,17 +212,17 @@ class Services:
     reranker: RerankerService
     harness: GenerationHarness
     refine_harness: GenerationHarness
-    bm25: Bm25Index
     qdrant_client: object
-    collection: str
-    off_topic_gate: OffTopicGate | None
     stt: SarvamSttClient | None
+    collections: dict[str, str]
+    bm25_indexes: dict[str, Bm25Index]
+    off_topic_gates: dict[str, OffTopicGate | None]
 
 
 services = Services()
 
 
-def _try_build_off_topic_gate(sample_size: int = 2000) -> OffTopicGate | None:
+def _try_build_off_topic_gate(language: str, sample_size: int = 2000) -> OffTopicGate | None:
     """Samples chunk text already in the index and re-embeds it locally to
     compute a corpus centroid for the off-topic gate — no separate offline
     job needed since the index itself is the source of truth for "what's in
@@ -188,20 +236,21 @@ def _try_build_off_topic_gate(sample_size: int = 2000) -> OffTopicGate | None:
     the bug, so re-embedding sampled text sidesteps it entirely.
     Returns None (gate disabled) if the collection doesn't exist yet or is
     empty, e.g. before the background indexing job has produced any points."""
+    collection = services.collections[language]
     try:
         points, _ = services.qdrant_client.scroll(
-            collection_name=services.collection, limit=sample_size, with_payload=["text"]
+            collection_name=collection, limit=sample_size, with_payload=["text"]
         )
     except Exception:
-        logger.warning("Off-topic gate disabled: collection %s not ready", services.collection)
+        logger.warning("Off-topic gate disabled: collection %s (language=%s) not ready", collection, language)
         return None
     texts = [p.payload["text"] for p in points if p.payload and p.payload.get("text")]
     if not texts:
-        logger.warning("Off-topic gate disabled: collection %s is empty", services.collection)
+        logger.warning("Off-topic gate disabled: collection %s (language=%s) is empty", collection, language)
         return None
     vectors = services.embedding.embed(texts).dense
     centroid = compute_corpus_centroid(vectors)
-    logger.info("Off-topic gate built from %d sampled points", vectors.shape[0])
+    logger.info("Off-topic gate built for language=%s from %d sampled points", language, vectors.shape[0])
     return OffTopicGate(centroid)
 
 
@@ -220,13 +269,21 @@ async def lifespan(app: FastAPI):
             # available if its optional runtime cannot initialize.
             logger.exception("Grounding validator unavailable; starting without NLI validation: %s", exc)
     services.qdrant_client = get_client(path=None if QDRANT_URL else QDRANT_PATH, url=QDRANT_URL)
-    services.collection = collection_name(DEFAULT_LANGUAGE, INDEX_VERSION)
-    services.bm25 = Bm25Index(BM25_PATH)
-    services.off_topic_gate = _try_build_off_topic_gate() if LOAD_OFF_TOPIC_GATE else None
+    services.collections = {lang: collection_name(lang, INDEX_VERSION) for lang in SUPPORTED_LANGUAGES}
+    services.bm25_indexes = {lang: Bm25Index(BM25_PATHS[lang]) for lang in SUPPORTED_LANGUAGES}
+    services.off_topic_gates = {
+        lang: (_try_build_off_topic_gate(lang) if LOAD_OFF_TOPIC_GATE else None) for lang in SUPPORTED_LANGUAGES
+    }
+    # The harness/refine_harness instances are shared across every configured
+    # language -- the constructor's off_topic_gate is a fallback for callers
+    # that don't override it per-call (see GenerationHarness.answer's
+    # off_topic_gate param), not the per-request source of truth once more
+    # than one language is configured. Everything else on the harness
+    # (generator, grounding_validator) is already language-agnostic.
     services.harness = GenerationHarness(
         generator=build_generator(),
         grounding_validator=grounding_validator,
-        off_topic_gate=services.off_topic_gate,
+        off_topic_gate=services.off_topic_gates.get(DEFAULT_LANGUAGE),
     )
     # Phase two of two-phase answering gets its own generator with a far more
     # generous retry budget. The default 8s is sized for a caller who is
@@ -238,7 +295,7 @@ async def lifespan(app: FastAPI):
     services.refine_harness = GenerationHarness(
         generator=build_generator(total_budget_seconds=REFINE_GENERATION_BUDGET_SECONDS),
         grounding_validator=grounding_validator,
-        off_topic_gate=services.off_topic_gate,
+        off_topic_gate=services.off_topic_gates.get(DEFAULT_LANGUAGE),
     )
     try:
         services.stt = SarvamSttClient()
@@ -344,8 +401,8 @@ def _sparse_vector(sparse: dict[int, float]) -> qdrant_models.SparseVector:
     return qdrant_models.SparseVector(indices=list(sparse.keys()), values=list(sparse.values()))
 
 
-def _read_completed_index_state() -> tuple[bool, int | None]:
-    """Return whether the deployment bootstrap recorded a complete index.
+def _read_completed_index_state(language: str) -> tuple[bool, int | None]:
+    """Return whether the deployment bootstrap recorded a complete index for this language.
 
     A Qdrant collection can exist while an interrupted upload is still only
     partially populated.  The versioned state manifest is written atomically
@@ -353,8 +410,9 @@ def _read_completed_index_state() -> tuple[bool, int | None]:
     """
     if not REQUIRE_COMPLETE_INDEX:
         return True, None
+    state_path = INDEX_STATE_PATHS[language]
     try:
-        state = json.loads(INDEX_STATE_PATH.read_text(encoding="utf-8"))
+        state = json.loads(state_path.read_text(encoding="utf-8"))
         total = int(state["total"])
         complete = (
             state.get("stage") == "completed"
@@ -363,8 +421,17 @@ def _read_completed_index_state() -> tuple[bool, int | None]:
         )
         return complete and total >= 0, total
     except (OSError, ValueError, TypeError, KeyError, json.JSONDecodeError) as exc:
-        logger.warning("healthcheck_index_state_failed path=%s error=%s", INDEX_STATE_PATH, exc)
+        logger.warning("healthcheck_index_state_failed language=%s path=%s error=%s", language, state_path, exc)
         return False, None
+
+
+def _require_language(language: str) -> str:
+    if language not in services.collections:
+        raise HTTPException(
+            status_code=400,
+            detail=f"unsupported language {language!r}; this deployment serves {sorted(services.collections)}",
+        )
+    return language
 
 
 def _answer_query(
@@ -384,6 +451,7 @@ def _answer_query(
         raise HTTPException(status_code=400, detail="query must not be empty")
     if len(query_text) > 2000:
         raise HTTPException(status_code=400, detail="query too long (max 2000 chars)")
+    language = _require_language(language)
 
     # BM25 is purely lexical — it needs the raw query string, not the query
     # embedding — so it does not have to wait for the encoder. Starting it
@@ -393,7 +461,7 @@ def _answer_query(
     # (and its long tail, dominated by high-document-frequency Hindi function
     # words) is absorbed rather than added.
     t_bm25 = time.perf_counter()
-    bm25_future = _retrieval_executor.submit(services.bm25.search, query_text, top_k=TOP_K_PER_SIGNAL)
+    bm25_future = _retrieval_executor.submit(services.bm25_indexes[language].search, query_text, top_k=TOP_K_PER_SIGNAL)
 
     t0 = time.perf_counter()
     q_embed = services.embedding.embed_query(query_text)
@@ -402,7 +470,7 @@ def _answer_query(
     t0 = time.perf_counter()
     dense_future = _retrieval_executor.submit(
         lambda: services.qdrant_client.query_points(
-            collection_name=services.collection,
+            collection_name=services.collections[language],
             query=q_embed.dense[0].tolist(),
             using="dense",
             limit=TOP_K_PER_SIGNAL,
@@ -410,7 +478,7 @@ def _answer_query(
     )
     sparse_future = _retrieval_executor.submit(
         lambda: services.qdrant_client.query_points(
-            collection_name=services.collection,
+            collection_name=services.collections[language],
             query=_sparse_vector(q_embed.sparse[0]),
             using="sparse",
             limit=TOP_K_PER_SIGNAL,
@@ -468,14 +536,16 @@ def _answer_query(
     if missing_chunk_ids:
         recovery_future = _retrieval_executor.submit(
             services.qdrant_client.retrieve,
-            collection_name=services.collection,
+            collection_name=services.collections[language],
             ids=[stable_point_id(cid) for cid in missing_chunk_ids],
             with_payload=True,
         )
 
     rerank_score_by_chunk_id: dict[str, float] = {}
     if not fused_chunk_ids:
-        resp = services.harness.answer(trace_id, query_text, language, [])
+        resp = services.harness.answer(
+            trace_id, query_text, language, [], off_topic_gate=services.off_topic_gates.get(language)
+        )
     else:
         t0 = time.perf_counter()
         known_ids = [cid for cid in fused_chunk_ids if cid in payload_by_chunk_id]
@@ -550,6 +620,7 @@ def _answer_query(
             # still ends up with an unbounded total.
             remaining_budget_seconds=REQUEST_BUDGET_SECONDS - (time.perf_counter() - t_start),
             min_generation_budget_seconds=MIN_GENERATION_BUDGET_SECONDS,
+            off_topic_gate=services.off_topic_gates.get(language),
         )
         timings["generation_ms"] = (time.perf_counter() - t0) * 1000
 
@@ -655,6 +726,9 @@ def refine_query(req: RefineRequest) -> QueryResponse:
         pending.candidates,
         query_embedding=pending.query_embedding,
         remaining_budget_seconds=None,  # no deadline: see docstring
+        # pending.language was already validated (via _require_language) when
+        # the original request was answered, so no re-check is needed here.
+        off_topic_gate=services.off_topic_gates.get(pending.language),
     )
     generation_ms = (time.perf_counter() - t_start) * 1000
 
@@ -743,6 +817,8 @@ def voice_query(
         raise HTTPException(status_code=503, detail="Voice input unavailable: SARVAM_API_KEY not configured")
     if audio.content_type and not audio.content_type.startswith("audio/"):
         raise HTTPException(status_code=400, detail=f"expected an audio file, got {audio.content_type}")
+    # Fail before paying for a Sarvam STT call, not after.
+    language = _require_language(language)
 
     request_started_at = time.perf_counter()
     audio_bytes = audio.file.read(MAX_AUDIO_BYTES + 1)
@@ -771,7 +847,10 @@ def voice_query(
     return VoiceQueryResponse(transcript=stt_result.transcript, **base.model_dump())
 
 
-_export_state: dict = {"status": "idle", "archive_path": None, "tmp_dir": None, "error": None}
+_export_state: dict[str, dict] = {
+    language: {"status": "idle", "archive_path": None, "tmp_dir": None, "error": None}
+    for language in SUPPORTED_LANGUAGES
+}
 _export_lock = threading.Lock()
 
 
@@ -781,13 +860,21 @@ def _check_export_token(token: str) -> None:
         raise HTTPException(status_code=403, detail="invalid or unconfigured export token")
 
 
-def _run_export(collection: str) -> None:
+def _run_export(language: str) -> None:
     """Runs in a background thread so no single HTTP request stays open for
     the many minutes this legitimately takes. Copies Qdrant's on-disk
     collection directory straight from disk rather than going through
     Qdrant's snapshot+checksum API, which hung indefinitely on a collection
     this size. Safe because the collection is serve-only at this point —
-    nothing is writing to those files concurrently."""
+    nothing is writing to those files concurrently.
+
+    Resolves collection/bm25_path/state_path from `language` rather than
+    closing over a single global -- exporting one language must never bundle
+    another language's BM25 index or state manifest."""
+    collection = services.collections[language]
+    bm25_path = BM25_PATHS[language]
+    state_path = INDEX_STATE_PATHS[language]
+    state = _export_state[language]
     try:
         qdrant_storage_path = Path(os.environ.get("QDRANT__STORAGE__STORAGE_PATH", QDRANT_PATH))
         collection_dir = qdrant_storage_path / "collections" / collection
@@ -797,54 +884,62 @@ def _run_export(collection: str) -> None:
         # tempfile's default dir (system /tmp) sits on the small container
         # disk, not the persistent volume. data/full_index resolves onto
         # the volume via the existing /app/data symlink.
-        export_root = INDEX_STATE_PATH.parent / "exports"
+        export_root = state_path.parent / "exports"
         export_root.mkdir(parents=True, exist_ok=True)
-        tmp_dir = Path(tempfile.mkdtemp(prefix="index_export_", dir=str(export_root)))
-        _export_state["tmp_dir"] = str(tmp_dir)
+        tmp_dir = Path(tempfile.mkdtemp(prefix=f"index_export_{language}_", dir=str(export_root)))
+        state["tmp_dir"] = str(tmp_dir)
 
         archive_path = tmp_dir / f"{collection}_export.tar.gz"
         with tarfile.open(archive_path, "w:gz") as tar:
             tar.add(collection_dir, arcname="qdrant_collection")
-            if Path(BM25_PATH).exists():
-                tar.add(BM25_PATH, arcname="bm25")
-            if INDEX_STATE_PATH.exists():
-                tar.add(INDEX_STATE_PATH, arcname="state.json")
+            if Path(bm25_path).exists():
+                tar.add(bm25_path, arcname="bm25")
+            if state_path.exists():
+                tar.add(state_path, arcname="state.json")
 
-        _export_state["archive_path"] = str(archive_path)
-        _export_state["status"] = "done"
+        state["archive_path"] = str(archive_path)
+        state["status"] = "done"
     except Exception as exc:
-        logger.exception("Index export failed")
-        _export_state["error"] = str(exc)
-        _export_state["status"] = "error"
+        logger.exception("Index export failed for language=%s", language)
+        state["error"] = str(exc)
+        state["status"] = "error"
 
 
 @app.post("/v1/admin/export-index/start")
-def export_index_start(token: str) -> dict:
+def export_index_start(token: str, language: str) -> dict:
     """Kick off the export in the background and return immediately."""
     _check_export_token(token)
+    language = _require_language(language)
     with _export_lock:
-        if _export_state["status"] == "running":
-            return {"status": "running"}
-        _export_state.update({"status": "running", "archive_path": None, "tmp_dir": None, "error": None})
-        threading.Thread(target=_run_export, args=(services.collection,), daemon=True).start()
-    return {"status": "running"}
+        state = _export_state[language]
+        if state["status"] == "running":
+            return {"status": "running", "language": language}
+        state.update({"status": "running", "archive_path": None, "tmp_dir": None, "error": None})
+        threading.Thread(target=_run_export, args=(language,), daemon=True).start()
+    return {"status": "running", "language": language}
 
 
 @app.get("/v1/admin/export-index/status")
-def export_index_status(token: str) -> dict:
+def export_index_status(token: str, language: str) -> dict:
     _check_export_token(token)
-    return {"status": _export_state["status"], "error": _export_state["error"]}
+    language = _require_language(language)
+    state = _export_state[language]
+    return {"status": state["status"], "error": state["error"], "language": language}
 
 
 @app.get("/v1/admin/export-index/download")
-def export_index_download(token: str) -> FileResponse:
+def export_index_download(token: str, language: str) -> FileResponse:
     """Only serves an already-finished archive — a fast, static file
     transfer, not something that waits on server-side work."""
     _check_export_token(token)
-    if _export_state["status"] != "done" or not _export_state["archive_path"]:
-        raise HTTPException(status_code=409, detail=f"export not ready (status={_export_state['status']!r})")
-    archive_path = Path(_export_state["archive_path"])
-    tmp_dir = Path(_export_state["tmp_dir"])
+    language = _require_language(language)
+    state = _export_state[language]
+    if state["status"] != "done" or not state["archive_path"]:
+        raise HTTPException(
+            status_code=409, detail=f"export not ready for language={language} (status={state['status']!r})"
+        )
+    archive_path = Path(state["archive_path"])
+    tmp_dir = Path(state["tmp_dir"])
     return FileResponse(
         archive_path,
         filename=archive_path.name,
@@ -855,12 +950,64 @@ def export_index_download(token: str) -> FileResponse:
 
 @app.get("/v1/health")
 def health() -> dict:
-    """Readiness, not merely process liveness, for deployment probes."""
+    """Readiness, not merely process liveness, for deployment probes.
+
+    Reports one qdrant/bm25/index_complete/ready block per configured
+    language rather than one flat set of booleans -- a language that hasn't
+    finished bootstrapping yet is visible by name, not just as a mystery
+    overall failure.
+    """
+    per_language: dict[str, dict] = {}
+    for language in SUPPORTED_LANGUAGES:
+        lang_checks = {"qdrant_collection": False, "bm25": False, "index_complete": False}
+        collection = services.collections[language]
+        expected_points: int | None = None
+        try:
+            lang_checks["qdrant_collection"] = services.qdrant_client.collection_exists(collection)
+            manifest_complete, expected_points = _read_completed_index_state(language)
+            if manifest_complete and lang_checks["qdrant_collection"]:
+                if expected_points is None:
+                    lang_checks["index_complete"] = True
+                else:
+                    actual_points = services.qdrant_client.count(collection_name=collection, exact=True).count
+                    lang_checks["index_complete"] = actual_points == expected_points
+                    if not lang_checks["index_complete"]:
+                        logger.warning(
+                            "healthcheck_index_count_mismatch language=%s collection=%s expected=%d actual=%d",
+                            language,
+                            collection,
+                            expected_points,
+                            actual_points,
+                        )
+        except Exception as exc:
+            logger.warning("healthcheck_qdrant_failed language=%s error=%s", language, exc)
+        try:
+            # Tantivy opens the index at startup; a query is the least
+            # ambiguous readiness check and does not mutate the index.
+            services.bm25_indexes[language].search("health", top_k=1)
+            lang_checks["bm25"] = True
+        except Exception as exc:
+            logger.warning("healthcheck_bm25_failed language=%s error=%s", language, exc)
+        lang_checks["ready"] = (
+            lang_checks["qdrant_collection"] and lang_checks["bm25"] and lang_checks["index_complete"]
+        )
+        per_language[language] = lang_checks
+
+    qdrant_ok = False
+    try:
+        services.qdrant_client.get_collections()
+        qdrant_ok = True
+    except Exception as exc:
+        logger.warning("healthcheck_qdrant_connection_failed error=%s", exc)
+
+    languages_ready = (
+        all(c["ready"] for c in per_language.values())
+        if HEALTH_REQUIRE_ALL_LANGUAGES
+        else any(c["ready"] for c in per_language.values())
+    )
     checks = {
-        "qdrant": False,
-        "collection": False,
-        "bm25": False,
-        "index_complete": False,
+        "qdrant": qdrant_ok,
+        "languages": per_language,
         "stt_configured": services.stt is not None,
         # Informational, not gating: the harness already degrades to
         # extractive answers on a generation failure, so a down backend is a
@@ -875,37 +1022,7 @@ def health() -> dict:
             else True
         ),
     }
-    expected_points: int | None = None
-    try:
-        services.qdrant_client.get_collections()
-        checks["qdrant"] = True
-        checks["collection"] = services.qdrant_client.collection_exists(services.collection)
-        manifest_complete, expected_points = _read_completed_index_state()
-        if manifest_complete and checks["collection"]:
-            if expected_points is None:
-                checks["index_complete"] = True
-            else:
-                actual_points = services.qdrant_client.count(
-                    collection_name=services.collection, exact=True
-                ).count
-                checks["index_complete"] = actual_points == expected_points
-                if not checks["index_complete"]:
-                    logger.warning(
-                        "healthcheck_index_count_mismatch collection=%s expected=%d actual=%d",
-                        services.collection,
-                        expected_points,
-                        actual_points,
-                    )
-    except Exception as exc:
-        logger.warning("healthcheck_qdrant_failed error=%s", exc)
-    try:
-        # Tantivy opens the index at startup; a query is the least ambiguous
-        # readiness check and does not mutate the index.
-        services.bm25.search("health", top_k=1)
-        checks["bm25"] = True
-    except Exception as exc:
-        logger.warning("healthcheck_bm25_failed error=%s", exc)
-    ready = checks["qdrant"] and checks["collection"] and checks["bm25"] and checks["index_complete"]
+    ready = qdrant_ok and languages_ready
     if not ready:
         raise HTTPException(status_code=503, detail={"status": "not_ready", "checks": checks})
     return {"status": "ok", "checks": checks}

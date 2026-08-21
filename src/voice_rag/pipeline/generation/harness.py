@@ -21,6 +21,12 @@ from voice_rag.pipeline.guardrails.safety import check_unsafe_input
 
 logger = logging.getLogger(__name__)
 
+# Distinguishes ".answer() called without off_topic_gate" (use the instance's
+# own gate -- every existing caller) from "called with off_topic_gate=None"
+# (explicitly disable the check for this one call) -- a plain None default
+# could not tell those apart.
+_UNSET_GATE: object = object()
+
 # Routing thresholds, environment-overridable so they can be tuned against a
 # running deployment rather than only by rebuilding an image.
 #
@@ -98,7 +104,16 @@ class GenerationHarness:
         query_embedding: np.ndarray | None = None,
         remaining_budget_seconds: float | None = None,
         min_generation_budget_seconds: float = 0.0,
+        off_topic_gate: OffTopicGate | None = _UNSET_GATE,  # type: ignore[assignment]
     ) -> AnswerResponse:
+        # Per-call override so one shared harness instance can serve
+        # multiple languages, each with its own corpus centroid, without
+        # rebuilding the harness per language -- see main.py's
+        # services.off_topic_gates[language]. Falls back to the
+        # constructor-provided gate when the caller doesn't pass one, so
+        # every pre-existing call site is unaffected.
+        gate = self.off_topic_gate if off_topic_gate is _UNSET_GATE else off_topic_gate
+
         unsafe_category = check_unsafe_input(query_final)
         if unsafe_category is not None:
             resp = _refused(trace_id, self.generator.model)
@@ -107,8 +122,8 @@ class GenerationHarness:
 
         retrieval_confidence = candidates[0].rerank_score or 0.0 if candidates else 0.0
 
-        if self.off_topic_gate is not None and query_embedding is not None:
-            if should_refuse(self.off_topic_gate, query_embedding, retrieval_confidence, LOW_CONFIDENCE_THRESHOLD):
+        if gate is not None and query_embedding is not None:
+            if should_refuse(gate, query_embedding, retrieval_confidence, LOW_CONFIDENCE_THRESHOLD):
                 return _refused(trace_id, self.generator.model)
         elif not candidates or retrieval_confidence < LOW_CONFIDENCE_THRESHOLD:
             return _refused(trace_id, self.generator.model)

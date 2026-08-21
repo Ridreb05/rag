@@ -1,3 +1,5 @@
+import numpy as np
+
 from voice_rag.pipeline.generation.harness import (
     EXTRACTIVE_CONFIDENCE_THRESHOLD,
     LOW_CONFIDENCE_THRESHOLD,
@@ -5,6 +7,7 @@ from voice_rag.pipeline.generation.harness import (
 )
 from voice_rag.pipeline.generation.schemas import GeneratedAnswer, GeneratedClaim, RetrievalCandidate
 from voice_rag.pipeline.guardrails.grounding import ClaimValidation
+from voice_rag.pipeline.guardrails.off_topic import OffTopicGate
 
 
 class FakeGenerator:
@@ -253,3 +256,58 @@ def test_grounding_rebuilds_answer_from_surviving_claims():
 
     assert resp.answer_text == "Grounded claim."
     assert "unsupported_claim_low_entailment" in resp.guardrail_flags
+
+
+def test_shared_harness_instance_uses_per_call_off_topic_gate_override():
+    """One GenerationHarness instance, built with no gate at construction
+    (mirrors main.py once the gate is resolved per-call from
+    services.off_topic_gates[language] rather than baked into the harness),
+    must apply whichever gate is passed to a given .answer() call — proving
+    per-language retrieval routing actually reaches the guardrail, not just
+    the generation prompt.
+
+    Uses a real generated answer (not None) and asserts on gen.calls, not
+    just resp.mode: a None response also ends in mode="refused" (via
+    "generation_declined"), which would make an off-topic refusal
+    indistinguishable from a declined generation if mode were the only
+    signal checked."""
+    generated = GeneratedAnswer(
+        answer_text="Diabetes affects blood sugar levels.",
+        claims=[GeneratedClaim(text="Diabetes affects blood sugar levels.", cited_chunk_ids=["c1"])],
+    )
+    gen = FakeGenerator(response=generated)
+    harness = GenerationHarness(generator=gen)  # no off_topic_gate at construction
+
+    candidates = [make_candidate(rerank_score=0.5)]  # between LOW and EXTRACTIVE thresholds
+    query_embedding = np.array([1.0, 0.0])
+
+    gate_accepts = OffTopicGate(centroid=np.array([1.0, 0.0]), similarity_threshold=0.35)
+    gate_refuses = OffTopicGate(centroid=np.array([0.0, 1.0]), similarity_threshold=0.35)
+
+    resp_a = harness.answer(
+        "ta", "query", "hi", candidates, query_embedding=query_embedding, off_topic_gate=gate_accepts
+    )
+    assert resp_a.mode == "generative"
+    assert gen.calls == 1
+
+    resp_b = harness.answer(
+        "tb", "query", "bn", candidates, query_embedding=query_embedding, off_topic_gate=gate_refuses
+    )
+    assert resp_b.mode == "refused"
+    assert gen.calls == 1  # unchanged -- refused before generation was ever attempted
+
+
+def test_answer_without_gate_override_falls_back_to_constructor_gate():
+    """Confirms the sentinel default preserves today's behavior for every
+    existing caller that never passes off_topic_gate to .answer() — e.g. the
+    tests above, and benchmark/latency_benchmark.py's single fixed-gate
+    harness."""
+    gen = FakeGenerator(response=None)
+    gate = OffTopicGate(centroid=np.array([0.0, 1.0]), similarity_threshold=0.35)
+    harness = GenerationHarness(generator=gen, off_topic_gate=gate)
+    candidates = [make_candidate(rerank_score=0.5)]
+    query_embedding = np.array([1.0, 0.0])  # orthogonal to the gate's centroid -> off-topic
+
+    resp = harness.answer("tc", "query", "hi", candidates, query_embedding=query_embedding)
+
+    assert resp.mode == "refused"
